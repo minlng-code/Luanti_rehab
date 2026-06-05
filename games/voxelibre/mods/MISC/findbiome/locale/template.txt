@@ -1,0 +1,12 @@
+# textdomain: findbiome
+# mod title
+# mod strings
+Wait until all mods have loaded!=
+Find and teleport to biome=Atopar e teletransportarse a un bioma
+<biome>=<bioma>
+No player.=Sen xogador.
+Biome found at @1.=Bioma atopado en @1.
+No biome found!=Non se atopou ningún bioma!
+Biome does not exist!=O bioma non existe!
+List all biomes=Listar todos os biomas
+No biomes.=Non hai biomas.

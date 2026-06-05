@@ -1,0 +1,5 @@
+# textdomain: mcl_beacons
+Beacon=Faro
+Beacon:=Faro:
+Primary Power:=Poder Primario:
+Inventory:=Inventario:

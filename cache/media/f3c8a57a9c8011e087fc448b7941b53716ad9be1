@@ -1,0 +1,11 @@
+# textdomain: mcl_structures
+Generate a pre-defined structure near your position.=Xera unha estrutura predefinida preto da túa posición.
+Structure placed.=Estrutura colocada.
+Error: No structure type given. Please use “/spawnstruct <type>”.=Erro: non se indica ningún tipo de estrutura. Usa "/spawnstruct <type>".
+Error: Unknown structure type. Please use “/spawnstruct <type>”.=Erro: tipo de estrutura descoñecido. Usa "/spawnstruct <type>".
+Use /help spawnstruct to see a list of available types.=Usa /help spawnstruct para ver unha lista de tipos dispoñibles.
+
+
+##### not used anymore #####
+
+Village built. WARNING: Villages are experimental and might have bugs.=Aldea construída. AVISO: as aldeas son experimentais e poden ter erros.

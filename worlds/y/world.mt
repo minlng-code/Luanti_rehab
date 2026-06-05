@@ -1,0 +1,11 @@
+player_backend = sqlite3
+backend = sqlite3
+world_name = y
+enable_damage = true
+creative_mode = false
+mod_storage_backend = sqlite3
+gameid = voxelibre
+auth_backend = sqlite3
+server_announce = false
+load_mod_fast_craft = mods/fast_craft-master
+load_mod_quests = mods/quests

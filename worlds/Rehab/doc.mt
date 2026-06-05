@@ -1,0 +1,1 @@
+return {players_stored_data={singleplayer={viewed_count={},revealed_count={nodes=80},revealed={nodes={["mcl_core:redsand"]=true,["mcl_colorblocks:hardened_clay_yellow"]=true}},viewed={}}}}

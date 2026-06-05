@@ -1,0 +1,9 @@
+# textdomain: mcl_music
+Turn music for yourself or another player on or off.=Activa ou desactiva a música para ti ou para outro xogador.
+
+You need the debug privilege in order to turn in-game music on or off for somebody else!=Precisas o privilexio de depuración para activar ou desactivar a música do xogo para outra persoa!
+
+Could not find player @1!=Non se puido atopar ao xogador @1!
+off=desactivado
+on=activado
+Set music for @1 to: @2=Música para @1 establecida en: @2

@@ -1,0 +1,9 @@
+player_backend = sqlite3
+backend = sqlite3
+world_name = Rehab
+enable_damage = true
+creative_mode = false
+mod_storage_backend = sqlite3
+gameid = mineclone5
+auth_backend = sqlite3
+server_announce = false

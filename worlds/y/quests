@@ -1,0 +1,1 @@
+local _={};_[1]="singleplayer";return {successfull_quests={},failed_quests={},hud={[_[1]]={autohide=true,central_message_enabled=true}},active_quests={[_[1]]={}}}

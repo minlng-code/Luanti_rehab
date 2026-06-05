@@ -1,0 +1,81 @@
+# textdomain:awards
+##[ api.lua ]##
+Amount of time award notification are displayed=Tempo que se amosan as notificacións de logros
+Whether advancements should be announced in chat=
+@1 has made the advancement @2=@1 conseguiu o Progreso @2						   
+Secret Advancement Made:=Progreso secreto feito:
+Goal Completed:=Obxectivo completado:
+Challenge Completed:=Desafío completado:
+Advancement Made:=Progreso feito:
+Secret Advancement Made: @1=Progreso secreto feito: @1
+Goal Completed: @1=Obxectivo completado: @1
+Challenge Completed: @1=Desafío completado: @1
+Advancement Made: @1=Progreso feito: @1
+Secret Advancement Made!=Progreso secreto feito!
+Goal Completed!=Obxectivo cumprido!
+Challenge Completed!=Desafío completado!
+Advancement Made!=Progreso feito!
+Error: No awards available.=Erro: non hai premios dispoñibles.
+OK=Aceptar
+(Secret Advancement)=(Progreso secreto)
+Make this advancement to find out what it is.=Fai este Progreso para descubrir o que é.
+@1 (got)=@1 (obtido)
+You've disabled awards. Type /awards enable to reenable.=Desactivaches os premios. Escriba /awards enable para volver activar.
+You have not gotten any awards.=Non conseguiches ningún logro.
+@1’s awards:=Logros de @1:
+@1: @2=@1: @2
+##[ chat_commands.lua ]##
+[c|clear|disable|enable]=[c|borrar|desactivar|activar]
+Show, clear, disable or enable your advancements.=Amosa, borra, desactiva ou activa os teus progresos.
+You have enabled your advancements.=Activaches os teus progresos.
+Awards are disabled, enable them first by using /awards enable!=Os logros están desactivados, actívaos primeiro usando /awards enable!
+All your awards and statistics have been cleared. You can now start again.=Limpáronse todos os teus logros e estatísticas. Agora podes comezar de novo.
+You have disabled your advancements.=Desactivaches os teus progresos.
+Can give advancements to any player=Pode dar progresos a calquera xogador
+(grant <player> (<advancement> | all)) | list=(outorgar <player> (<advancement> | todos)) | lista
+Give advancement to player or list all advancements=Dálle un progreso ao xogador ou enumera todos os progresos
+@1 (@2)=@1 (@2)
+Invalid syntax.=Sintaxe non válida.
+Invalid action.=Acción non válida.
+Player is not online.=O xogador non está en liña.
+Done.=Feito.
+Advancement “@1” does not exist.=O progreso “@1” non existe.
+##[ sfinv.lua ]##
+Awards=Logros
+##[ triggers.lua ]##
+@1/@2 dug=@1/@2 escavado
+Mine blocks: @1×@2=Bloques minados: @1×@2
+Mine a block: @1=Minar un bloque: @1
+Mine @1 block(s).=Minar @1 bloque(s).
+@1/@2 placed=@1/@2 colocado
+Place blocks: @1×@2=Colocar bloques: @1×@2
+Place a block: @1=Coloca un bloque: @1
+Place @1 block(s).=Coloca @1 bloque(s).
+@1/@2 eaten=@1/@2 comido
+Eat: @1×@2=Comer: @1×@2
+Eat: @1=Comer: @1
+Eat @1 item(s).=Come @1 elemento(s).
+@1/@2 deaths=@1/@2 mortes
+Die @1 times.=Morre @1 veces.
+Die.=Morre.
+@1/@2 chat messages=@1/@2 mensaxes de chat
+Write @1 chat messages.=Escribe @1 mensaxes no chat.
+Write something in chat.=Escribe algo no chat.
+@1/@2 game joins=@1/@2 conexións ao xogo
+Join the game @1 times.=Entra noo xogo @1 veces.
+Join the game.=Entra no xogo.
+@1/@2 crafted=@1/@2 elaborados
+Craft: @1×@2=Elaboración: @1×@2
+Craft: @1=Elaboración: @1
+Craft @1 item(s).=Elaborar @1 elemento(s).
+
+
+##### not used anymore #####
+
+<achievement ID>=<ID de logro>
+<name>=<nome>
+Advancement: @1=Progreso: @1
+Achievement not found.=Non se atopou o logro.
+Get the achievements statistics for the given player or yourself=Obtén as estatísticas de logros para o xogador ou ti mesmo
+List awards in chat (deprecated)=Únete ao xogo.
+Show details of an achievement=Mostrar detalles dun logro

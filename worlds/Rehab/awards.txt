@@ -1,0 +1,1 @@
+local _={};_[1]="singleplayer";return {[_[1]]={name=_[1],craft={},deaths=0,joins=1,eat={},place={},chats=0,unlocked={},count={}}}

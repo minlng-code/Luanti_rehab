@@ -1,0 +1,18 @@
+# textdomain: mcl_smoker
+Smoker=Afumador
+Inventory=Inventario
+Recipe book=Libro de receitas
+Cooks food faster than furnace=Cociña os alimentos máis rápido que o forno
+
+Smokers cook several items, mainly raw foods, into cooked foods, but twice as fast as a normal furnace.=Os afumadores cociñan varios alimentos, principalmente alimentos crus en alimentos cociñados, pero o dobre de rápido ca un forno normal.
+
+Use the smoker to open the furnace menu.=Use o afumador para abrir o menú do forno.
+
+Place a furnace fuel in the lower slot and the source material in the upper slot.=Coloca un combustible de forno na ranura inferior e o material de orixe na ranura superior.
+
+The smoker will slowly use its fuel to cook the item.=O afumador empregará lentamente o seu combustible para cociñar o alimento.
+The result will be placed into the output slot at the right side.=O resultado colocarase na rañura de saída do lado dereito.
+
+Use the recipe book to see what foods you can cook, what you can use as fuel and how long it will burn.=Usa o libro de receitas para ver que alimentos podes cociñar, que podes usar como combustible e canto tempo arderá.
+
+Burning Smoker=Afumador aceso
