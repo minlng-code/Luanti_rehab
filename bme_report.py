@@ -66,12 +66,9 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         left_ratio, right_ratio = 0.0, 0.0
 
     # 5. CÁC THAM SỐ KHÁC
-    # Grip: CSV v6.1 ghi bit 0/1 (hysteresis từ firmware)
-    grip_edges = (df["Grip"].diff() == 1).sum()
-    
     pitch_min, pitch_max = df["Pitch"].min(), df["Pitch"].max()
     roll_min,  roll_max  = df["Roll"].min(),  df["Roll"].max()
-    
+
     tremor_pitch = df["Pitch"].rolling(100).std().dropna().mean() if len(df)>100 else 0
     tremor_roll  = df["Roll"].rolling(100).std().dropna().mean() if len(df)>100 else 0
     tremor_index = max(tremor_pitch, tremor_roll)
@@ -84,27 +81,39 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     late_rom  = (df_late["Pitch"].max() - df_late["Pitch"].min()) + (df_late["Roll"].max() - df_late["Roll"].min())
     fatigue_pct = (late_rom / early_rom * 100) if early_rom > 0 else 100.0
 
+    # 6. FSR TAY TRÁI — lực bóp tĩnh (Mathiowetz et al., Bohannon 2006)
+    # FSR_L_KG: lực cầm nhẹ liên tục trong setup này (~0.05–0.5 kg)
+    if "FSR_L_KG" in df.columns:
+        fsr_l = pd.to_numeric(df["FSR_L_KG"], errors="coerce").fillna(0.0)
+        fsr_l_mean_kg = round(float(fsr_l.mean()), 4)
+        fsr_l_peak_kg = round(float(fsr_l.max()), 4)
+    else:
+        fsr_l_mean_kg = 0.0
+        fsr_l_peak_kg = 0.0
+
     return {
-        "rom_pitch":    round(pitch_max - pitch_min, 1),
-        "rom_roll":     round(roll_max - roll_min, 1),
-        "tremor_index": round(tremor_index, 2),
-        "grip_count":   int(grip_edges),
-        "grip_rate":    round(grip_edges / (total_secs / 60) if total_secs > 0 else 0, 1),
-        "active_secs":  round(active_secs, 1),
-        "rest_secs":    round(total_secs - active_secs, 1),
-        "active_ratio": round(active_secs / total_secs * 100 if total_secs > 0 else 0, 1),
-        "left_ratio":   round(left_ratio, 1),
-        "right_ratio":  round(right_ratio, 1),
-        "fatigue_pct":  round(fatigue_pct, 1),
-        "task_duration":round(total_secs, 1),
-        "pitch_min":    round(pitch_min, 1),
-        "pitch_max":    round(pitch_max, 1),
-        "roll_min":     round(roll_min, 1),
-        "roll_max":     round(roll_max, 1),
-        "tremor_pitch": round(tremor_pitch, 2),
-        "tremor_roll":  round(tremor_roll, 2),
-        "early_rom":    round(early_rom, 1),
-        "late_rom":     round(late_rom, 1),
+        # ── 7 tham số chính ──────────────────────────────────
+        "rom_pitch":      round(pitch_max - pitch_min, 1),
+        "rom_roll":       round(roll_max  - roll_min,  1),
+        "tremor_index":   round(tremor_index, 2),
+        "fsr_l_mean_kg":  fsr_l_mean_kg,   # lực bóp trung bình tay liệt
+        "fsr_l_peak_kg":  fsr_l_peak_kg,   # lực bóp đỉnh tay liệt
+        "left_ratio":     round(left_ratio, 1),
+        "fatigue_pct":    round(fatigue_pct, 1),
+        # ── Phụ (dùng bởi dashboard / trang 2 PDF) ───────────
+        "right_ratio":    round(right_ratio, 1),
+        "active_secs":    round(active_secs, 1),
+        "rest_secs":      round(total_secs - active_secs, 1),
+        "active_ratio":   round(active_secs / total_secs * 100 if total_secs > 0 else 0, 1),
+        "task_duration":  round(total_secs, 1),
+        "pitch_min":      round(pitch_min, 1),
+        "pitch_max":      round(pitch_max, 1),
+        "roll_min":       round(roll_min,  1),
+        "roll_max":       round(roll_max,  1),
+        "tremor_pitch":   round(tremor_pitch, 2),
+        "tremor_roll":    round(tremor_roll,  2),
+        "early_rom":      round(early_rom, 1),
+        "late_rom":       round(late_rom,  1),
     }
 
 
@@ -187,22 +196,21 @@ def _page1(pdf, m, patient_name, session_no, session_date):
     dur_s = int(m["task_duration"] % 60)
     _metric_box(summary_ax[0], "Thời gian phiên", f"{dur_m}:{dur_s:02d}", "phút:giây",
                 C_ACCENT)
-    _metric_box(summary_ax[1], "Tỷ lệ vận động", f"{m['active_ratio']}%",
-                "thời gian thực tế",
-                _color_for(m["active_ratio"], 60, 40))
-    _metric_box(summary_ax[2], "Tổng lần bóp", str(m["grip_count"]), "lần",
-                C_ACCENT)
-    fatigue_c = _color_for(m["fatigue_pct"], 70, 50)
+    _metric_box(summary_ax[1], "Tay liệt đóng góp", f"{m['left_ratio']}%",
+                "bilateral ratio",
+                _color_for(m["left_ratio"], 40, 25))
+    _metric_box(summary_ax[2], "Lực bóp đỉnh", f"{m['fsr_l_peak_kg']:.3f}", "kg (tay liệt)",
+                _color_for(m["fsr_l_peak_kg"], 0.20, 0.10))
+    fatigue_c = _color_for(m["fatigue_pct"], 75, 50)
     _metric_box(summary_ax[3], "Chỉ số mỏi cơ", f"{m['fatigue_pct']}%",
                 "hiệu suất cuối/đầu", fatigue_c,
                 "⚠ Mỏi" if m["fatigue_pct"] < 50 else "✓ Ổn")
 
     # ── 7 tham số chi tiết (rows 3–5) ─────────────────────────
-    # Row 3: Tham số 1 & 2
     ax_h2 = fig.add_subplot(gs[3, :2])
-    _header(ax_h2, "1  Biên độ vận động (aROM)")
+    _header(ax_h2, "1 & 2  Biên độ vận động (aROM)")
     ax_h3 = fig.add_subplot(gs[3, 2:])
-    _header(ax_h3, "2  Độ run (Tremor Index)")
+    _header(ax_h3, "3  Độ run (Tremor Index)")
 
     rom_axes    = [fig.add_subplot(gs[4, i]) for i in range(2)]
     tremor_axes = [fig.add_subplot(gs[4, i]) for i in range(2, 4)]
@@ -222,17 +230,18 @@ def _page1(pdf, m, patient_name, session_no, session_date):
                 _color_for(m["tremor_roll"], 3, 6, higher_is_better=False),
                 "Thấp = tốt")
 
-    # Row 5: Tham số 3, 4 (còn 5, 6, 7 ở trang đồ thị)
+    # Row 5: Tham số 4 & 5 — Lực bóp tay liệt | 6 & 7 — Bilateral + Fatigue
     ax_h4 = fig.add_subplot(gs[5, :2])
-    _header(ax_h4, "3  Task Efficiency")
+    _header(ax_h4, "4 & 5  Lực bóp tay liệt (FSR_L)", "Mathiowetz et al. | Bohannon 2006")
     ax_h5 = fig.add_subplot(gs[5, 2:])
-    _header(ax_h5, "4  Grip Rate")
+    _header(ax_h5, "6 & 7  Bilateral + Fatigue")
 
-    # Hiển thị inline vào header vì hết row
-    ax_h4.text(0.4, 0.5, f"{dur_m} phút {dur_s} giây",
+    ax_h4.text(0.38, 0.5,
+               f"TB: {m['fsr_l_mean_kg']:.3f} kg   Đỉnh: {m['fsr_l_peak_kg']:.3f} kg",
                transform=ax_h4.transAxes, color="white",
                fontsize=11, va="center", fontweight="bold")
-    ax_h5.text(0.4, 0.5, f"{m['grip_rate']} lần/phút  ({m['grip_count']} lần tổng)",
+    ax_h5.text(0.3, 0.5,
+               f"Tay liệt: {m['left_ratio']}%   Mỏi: {m['fatigue_pct']}%",
                transform=ax_h5.transAxes, color="white",
                fontsize=11, va="center", fontweight="bold")
 
@@ -330,27 +339,38 @@ def _page3(pdf, df, m):
     ax_b = fig.add_subplot(gs[0, :])
     ax_b.set_facecolor(C_PRIMARY)
     ax_b.text(0.5, 0.5,
-              "PHÂN TÍCH CHUYÊN SÂU — Hoạt động / Hai tay / Mỏi cơ",
+              "PHÂN TÍCH CHUYÊN SÂU — Lực bóp tay liệt / Bilateral / Mỏi cơ",
               transform=ax_b.transAxes, color="white",
               fontsize=12, ha="center", va="center", fontweight="bold")
     ax_b.axis("off")
 
-    # ── 5. Active duration — Pie chart ────────────────────────
-    ax5 = fig.add_subplot(gs[1, 0])
-    sizes  = [m["active_secs"], m["rest_secs"]]
-    labels = [f"Vận động\n{m['active_secs']:.0f}s\n({m['active_ratio']:.0f}%)",
-              f"Nghỉ\n{m['rest_secs']:.0f}s"]
-    colors = [C_ACCENT, "#CCCCCC"]
-    wedges, texts = ax5.pie(sizes, colors=colors, startangle=90,
-                             wedgeprops=dict(width=0.55))
-    ax5.set_title("5 · Thời gian vận động thực tế",
-                  color=C_PRIMARY, fontsize=10, fontweight="bold")
-    ax5.legend(labels, loc="lower center", bbox_to_anchor=(0.5, -0.22),
-               fontsize=8, frameon=False)
+    t = df.index * 0.02
+
+    # ── 4 & 5. FSR_L theo thời gian ───────────────────────────
+    ax45 = fig.add_subplot(gs[1, :])
+    if "FSR_L_KG" in df.columns:
+        fsr_l_series = pd.to_numeric(df["FSR_L_KG"], errors="coerce").fillna(0.0)
+        ax45.plot(t, fsr_l_series, color=C_ACCENT, linewidth=0.8,
+                  label="FSR_L (kg)", alpha=0.9)
+        ax45.axhline(0.10, color=C_WARN, linewidth=0.8, linestyle="--",
+                     label="Ngưỡng TB tốt (0.10 kg)")
+        ax45.axhline(0.20, color=C_GOOD, linewidth=0.8, linestyle="--",
+                     label="Ngưỡng đỉnh tốt (0.20 kg)")
+        ax45.axhline(m["fsr_l_mean_kg"], color=C_PRIMARY, linewidth=1.0,
+                     linestyle=":", label=f"TB phiên: {m['fsr_l_mean_kg']:.3f} kg")
+        ax45.set_ylabel("Lực (kg)", fontsize=8)
+        ax45.set_xlabel("Thời gian (s)", fontsize=8)
+    else:
+        ax45.text(0.5, 0.5, "Không có dữ liệu FSR_L_KG trong CSV",
+                  transform=ax45.transAxes, ha="center", color=C_WARN)
+    ax45.legend(fontsize=7, loc="upper right")
+    _style(ax45, f"4 & 5 · Lực bóp tay liệt — TB: {m['fsr_l_mean_kg']:.3f} kg  "
+                 f"Đỉnh: {m['fsr_l_peak_kg']:.3f} kg  "
+                 f"({'✓ Tốt' if m['fsr_l_peak_kg'] >= 0.20 else '⚠ Yếu' if m['fsr_l_peak_kg'] >= 0.10 else '✗ Rất yếu'})")
 
     # ── 6. Bilateral — Horizontal bar ─────────────────────────
-    ax6 = fig.add_subplot(gs[1, 1])
-    categories = ["Tay Trái\n(Flight Stick)", "Tay Phải\n(MPU6050 + Grip)"]
+    ax6 = fig.add_subplot(gs[2, 0])
+    categories = ["Tay Trái (liệt)\nFlight Stick", "Tay Phải (lành)\nMPU6050"]
     values     = [m["left_ratio"], m["right_ratio"]]
     bar_colors = [C_ACCENT, "#E07B54"]
     bars = ax6.barh(categories, values, color=bar_colors,
@@ -360,46 +380,38 @@ def _page3(pdf, df, m):
                  f"{val:.1f}%", va="center", fontsize=9, color=C_PRIMARY)
     ax6.set_xlim(0, 115)
     ax6.set_xlabel("% thao tác", fontsize=8)
-    ax6.axvline(50, color="#aaa", linestyle="--", linewidth=0.8)
-    ax6.text(50, 1.55, "Cân bằng", fontsize=7, color="#888", ha="center")
+    ax6.axvline(40, color=C_GOOD,  linewidth=0.8, linestyle="--")
+    ax6.text(40, 1.55, "≥40% tốt", fontsize=7, color=C_GOOD, ha="center")
     _style(ax6, "6 · Phân bổ hai tay (Bilateral)")
 
     # ── 7. Fatigue — ROM theo thời gian (cửa sổ 30s) ─────────
-    ax7 = fig.add_subplot(gs[2, :])
-    window_30s = int(30 / 0.02)
-    roll_max_s  = df["Pitch"].abs().rolling(window_30s).max().dropna()
-    roll_roll_s = df["Roll"].abs().rolling(window_30s).max().dropna()
-    t_win = roll_max_s.index * 0.02
-
-    ax7.plot(t_win, roll_max_s,  color=C_ACCENT,  linewidth=1, label="Pitch max (30s)")
-    ax7.plot(t_win, roll_roll_s, color="#E07B54", linewidth=1, label="Roll max (30s)",
-             alpha=0.8)
+    ax7 = fig.add_subplot(gs[2, 1])
+    window_30s  = int(30 / 0.02)
+    pitch_max_s = df["Pitch"].abs().rolling(window_30s).max().dropna()
+    roll_max_s  = df["Roll"].abs().rolling(window_30s).max().dropna()
+    t_win = pitch_max_s.index * 0.02
+    ax7.plot(t_win, pitch_max_s, color=C_ACCENT,  linewidth=1, label="Pitch max")
+    ax7.plot(t_win, roll_max_s,  color="#E07B54", linewidth=1, label="Roll max", alpha=0.8)
+    t_max = len(df) * 0.02
+    ax7.axvspan(max(0, t_max - 300), t_max, alpha=0.07, color=C_BAD)
     ax7.set_xlabel("Thời gian (s)", fontsize=8)
     ax7.set_ylabel("Biên độ tối đa (°)", fontsize=8)
-    _style(ax7, f"7 · Chỉ số Mỏi Cơ — Fatigue Index: {m['fatigue_pct']:.0f}%"
-                f"  {'⚠ Cần nghỉ!' if m['fatigue_pct'] < 50 else '✓ Trong ngưỡng an toàn'}")
-    ax7.legend(fontsize=8)
-
-    # Shade vùng "5 phút cuối"
-    t_max = len(df) * 0.02
-    ax7.axvspan(max(0, t_max - 300), t_max, alpha=0.07,
-                color=C_BAD, label="5 phút cuối")
-    ax7.legend(fontsize=8)
+    ax7.legend(fontsize=7)
+    _style(ax7, f"7 · Fatigue: {m['fatigue_pct']:.0f}%  "
+                f"({'✓ Ổn' if m['fatigue_pct'] >= 75 else '⚠ Cần nghỉ' if m['fatigue_pct'] >= 50 else '✗ Mỏi nặng'})")
 
     # ── Chú thích ngưỡng lâm sàng ─────────────────────────────
     ax_note = fig.add_subplot(gs[3, :])
     ax_note.set_facecolor(C_BG)
     ax_note.axis("off")
     note_text = (
-        "Ngưỡng lâm sàng tham khảo:  "
-        "aROM Pitch ≥ 30° = Tốt  |  "
-        "Tremor < 3° std = Kiểm soát tốt  |  "
-        "Active Ratio ≥ 60% = Tích cực  |  "
-        "Fatigue < 50% = Cần nghỉ ngơi\n"
-        "Bilateral: Lý tưởng khi tay liệt đóng góp ≥ 40% thao tác.\n"
+        "Ngưỡng lâm sàng tham khảo (Mathiowetz et al., Bohannon 2006, Desrosiers 1995):\n"
+        "aROM Pitch ≥ 30° = Tốt  |  Tremor < 3° std = Kiểm soát tốt  |  "
+        "FSR_L mean ≥ 0.10 kg = Tốt  |  FSR_L peak ≥ 0.20 kg = Tốt\n"
+        "Bilateral: Tay liệt đóng góp ≥ 40% = Tốt  |  Fatigue ≥ 75% = Trong ngưỡng an toàn  |  < 50% = Cần nghỉ ngơi\n"
         "Báo cáo này chỉ mang tính hỗ trợ — Kết luận lâm sàng cần bác sĩ phụ trách xác nhận."
     )
-    ax_note.text(0.5, 0.7, note_text, transform=ax_note.transAxes,
+    ax_note.text(0.5, 0.75, note_text, transform=ax_note.transAxes,
                  fontsize=7.5, ha="center", va="top", color="#555",
                  linespacing=1.8,
                  bbox=dict(boxstyle="round,pad=0.4", facecolor="#EEF2F7",

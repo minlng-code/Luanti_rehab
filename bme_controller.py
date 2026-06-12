@@ -278,22 +278,21 @@ def parse_packet(line: str) -> dict | None:
         return {
             "jx":          int(parts[1]),
             "jy":          int(parts[2]),
-            "b1_dur":      int(parts[3]),      # B1 duration ms (0/N/65535)
-            "b2_dur":      int(parts[4]),      # B2 duration ms (0/N/65535)
-            "grip":        int(parts[5]),      # FSR402 hysteresis bit (0/1)
+            "b1_dur":      int(parts[3]),      
+            "b2_dur":      int(parts[4]),      
+            "grip":        int(parts[5]),      
             "pitch":       float(parts[6]),
             "roll":        float(parts[7]),
-            "fsr_l_kg":    float(parts[8]),    # FSR406 tay trái (kg, Fatigue)
-            "fsr_r_kg":    float(parts[9]),    # FSR402 tay phải (kg, action)
+            "fsr_l_kg":    float(parts[8]),    
+            "fsr_r_kg":    float(parts[9]),    
             "vib_active":  int(parts[10]),
             "servo_angle": int(parts[11]),
-            # Flight stick (firmware v6.1) — D4/D6/D11/D8/D13/D10
-            "fs_up":       int(parts[12]),
-            "fs_down":     int(parts[13]),
-            "fs_left":     int(parts[14]),
-            "fs_right":    int(parts[15]),
-            "fs_trigger":  int(parts[16]),
-            "fs_thumb":    int(parts[17]),
+            "fs_up":       int(parts[15]),   # thực tế UP đang là vị trí trigger
+            "fs_down":     int(parts[16]),   # thực tế DOWN đang là right
+            "fs_left":     int(parts[13]),   # thực tế LEFT đang là up
+            "fs_right":    int(parts[12]),   # thực tế RIGHT đang là down
+            "fs_trigger":  int(parts[14]),   # thực tế TRIGGER đang là left
+            "fs_thumb":    int(parts[17]),   # thumb giữ nguyên
         }
     except (ValueError, IndexError):
         return None
@@ -380,17 +379,25 @@ def find_arduino(timeout: int = 30) -> serial.Serial:
             try:
                 print(f"   Thử {info.device} ({info.description[:38]})...",
                       end=" ", flush=True)
-                s = serial.Serial(info.device, BAUD_RATE, timeout=2)
-                time.sleep(1.8); s.reset_input_buffer()
-                for _ in range(15):
-                    if HANDSHAKE_MSG in s.readline():
-                        print("✅  BME_READY!"); return s
+                s = serial.Serial(info.device, BAUD_RATE, timeout=3)
+                # Đọc TRONG lúc chờ — không reset_input_buffer() vì
+                # BME_READY có thể đến bất cứ lúc nào trong ~3s boot
+                found = False
+                deadline_boot = time.time() + 5.0
+                while time.time() < deadline_boot:
+                    line = s.readline()
+                    if line:
+                        print(f"\n     >> {line.decode('utf-8','ignore').strip()}", flush=True)
+                    if HANDSHAKE_MSG in line:
+                        found = True; break
+                if found:
+                    print("✅  BME_READY!"); return s
                 s.close(); print("không phải BME.")
             except (serial.SerialException, OSError): print("lỗi.")
         time.sleep(2)
     raise RuntimeError(
         "\n❌ Không tìm thấy Arduino!\n"
-        "   Kiểm tra: USB cắm | Driver CH340/CP2102 | Firmware v5.0"
+        "   Kiểm tra: USB cắm | Driver CH340/CP2102 | Firmware v6.1"
     )
 
 
@@ -492,6 +499,126 @@ def create_report(csv_path: str) -> None:
 
 
 # ════════════════════════════════════════════════════════════
+#  HIỂN THỊ JOYSTICK MAP (ANSI multi-line)
+# ════════════════════════════════════════════════════════════
+
+_JOY_RANGE      = 512   # half-range khớp firmware (JX/JY: -512..+512)
+_GRID_SIZE      = 9     # kích thước lưới — lẻ, đủ lớn để thấy chuyển động
+_display_lines  = 0     # số dòng đã in lần trước (dùng để xoá)
+
+# Bật Virtual Terminal Processing trên Windows để ANSI escape hoạt động
+try:
+    import ctypes
+    _k32 = ctypes.windll.kernel32                          # type: ignore[attr-defined]
+    _hout = _k32.GetStdHandle(-11)                         # STD_OUTPUT_HANDLE
+    _mode = ctypes.c_ulong()
+    _k32.GetConsoleMode(_hout, ctypes.byref(_mode))
+    _k32.SetConsoleMode(_hout, _mode.value | 0x0004)       # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+except Exception:
+    pass   # Linux/Mac — không cần
+
+
+def _btn(active: bool) -> str:
+    """Trả về ký tự ASCII an toàn cho trạng thái nút (tránh lỗi font Windows)."""
+    return "[X]" if active else "[ ]"
+
+
+def _joy_multiline(jx: int, jy: int,
+                   pitch: float, roll: float, yaw: float,
+                   fs_up: bool, fs_down: bool, fs_left: bool, fs_right: bool,
+                   fs_trigger: bool, fs_thumb: bool,
+                   fsr_r: float, fsr_l: float,
+                   fsr_r_kg: float, fsr_l_kg: float,
+                   mode_label: str, tremor: bool,
+                   trigger_count: int = 0) -> str:
+    """
+    Vẽ joystick map 9x9 + thông số IMU / FS sang phải.
+    trigger_count: số lần đã nhấn trigger (1-9), 0 = chưa nhấn.
+    """
+    G   = _GRID_SIZE
+    mid = G // 2   # = 4 với G=9
+
+    # ── XỬ LÝ ƯU TIÊN HIỂN THỊ CON TRỎ ─────────────────────────
+    disp_jx = jx
+    disp_jy = jy
+
+    # Nếu có thao tác trên cần gạt Digital, ép ghi đè trục Analog để vẽ UI
+    if fs_left or fs_right or fs_up or fs_down:
+        disp_jx = 0
+        disp_jy = 0
+        if fs_left:  disp_jx = -_JOY_RANGE
+        if fs_right: disp_jx = _JOY_RANGE
+        if fs_up:    disp_jy = _JOY_RANGE
+        if fs_down:  disp_jy = -_JOY_RANGE
+
+    # ── Tính vị trí con trỏ ──────────────────────────────────
+    # Map JX/JY (-JOY_RANGE … +JOY_RANGE) → index 0 … G-1
+    # Dùng round() để tránh lệch 1 ô khi giá trị = 0
+    jx_c  = max(-_JOY_RANGE, min(_JOY_RANGE, disp_jx))
+    jy_c  = max(-_JOY_RANGE, min(_JOY_RANGE, disp_jy))
+    c_dot = round((jx_c  + _JOY_RANGE) / (2.0 * _JOY_RANGE) * (G - 1))
+    r_dot = round((jy_c + _JOY_RANGE) / (2.0 * _JOY_RANGE) * (G - 1))
+    c_dot = max(0, min(G - 1, c_dot))
+    r_dot = max(0, min(G - 1, r_dot))
+
+    # ── Thông tin bên phải (9 dòng khớp G=9 hàng lưới) ─────────────
+    # Hiển thị trigger_count: 0 = chưa nhấn, 1-9 = số lần đã nhấn
+    trg_display = (f"[X] -> key:{trigger_count}" if fs_trigger
+                   else f"[ ] last:{trigger_count if trigger_count else '-'}")
+    thumb_display = "[X] -> JUMP" if fs_thumb else "[ ]"
+
+    info = [
+        f"  P={pitch:+6.1f} deg",
+        f"  R={roll:+6.1f} deg",
+        f"  Y={yaw:+6.1f} deg",
+        f"  FSR_R={fsr_r:4.0f}% {fsr_r_kg:.3f}kg",
+        f"  FSR_L={fsr_l:4.0f}% {fsr_l_kg:.3f}kg",
+        f"  [{mode_label}]" + ("  !TREMOR" if tremor else ""),
+        f"  UP={_btn(fs_up)}  DN={_btn(fs_down)}",
+        f"  L={_btn(fs_left)}  R={_btn(fs_right)}",
+        f"  TRG={trg_display}",
+    ]
+
+    lines = []
+    lines.append(f"  +---JOYSTICK MAP---+")
+    for r in range(G):
+        row_str = "  |"
+        for c in range(G):
+            if r == r_dot and c == c_dot:
+                row_str += "O"          # con trỏ joystick
+            elif r == mid and c == mid:
+                row_str += "+"          # tâm
+            elif r == mid and c != mid:
+                row_str += "-"          # trục ngang
+            elif c == mid and r != mid:
+                row_str += "|"          # trục dọc
+            else:
+                row_str += " "
+        row_str += "|"
+        row_str += info[r] if r < len(info) else ""
+        lines.append(row_str)
+        
+    # Border bawah — hiển thị giá trị disp_jx/jy để dễ debug trạng thái giả lập
+    lines.append(f"  +------------------+  JX={disp_jx:+4d} JY={disp_jy:+4d}  THB={thumb_display}")
+    return "\n".join(lines)
+
+
+def _redraw_joy(text: str) -> None:
+    """
+    Xoá block lần trước rồi in block mới tại chỗ.
+    Dùng ANSI \033[nF (move cursor up n lines) + \033[J (erase below).
+    Đã bật VTP ở trên nên hoạt động trên Windows 10+ cmd/PowerShell/WT.
+    """
+    global _display_lines
+    line_count = text.count("\n") + 1
+    if _display_lines > 0:
+        sys.stdout.write(f"\033[{_display_lines}F\033[J")  # lên n dòng + xoá xuống
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+    _display_lines = line_count
+
+
+# ════════════════════════════════════════════════════════════
 #  VÒNG LẶP CHÍNH
 # ════════════════════════════════════════════════════════════
 
@@ -531,8 +658,31 @@ def run(ser: serial.Serial) -> None:
     error_count = 0
     last_status = time.time()
 
+    # ── TRẠNG THÁI EDGE-DETECTION CHO CÁC NÚT ─────────────────────
+    # Mỗi nút lưu trạng thái lần trước để phát hiện rising-edge (nhấn)
+    # và falling-edge (nhả) — tránh gửi phím liên tục mỗi 20ms
+
+    _prev_fs_left    = False
+    _prev_fs_right   = False
+    _prev_fs_up      = False
+    _prev_fs_down    = False
+    _prev_fs_trigger = False
+    _prev_fs_thumb   = False
+
+    # ── BỘ ĐẾM TRIGGER → GỬI SỐ 1-9 ──────────────────────────────
+    # Mỗi lần nhấn trigger (rising-edge) tăng bộ đếm lên 1.
+    # Khi bộ đếm = N (1..9), gửi phím số N vào Notepad/game.
+    # Khi bộ đếm = 9, lần nhấn tiếp theo reset về 1.
+
+    _hold_start_time  = {'a': 0.0, 'd': 0.0, 's': 0.0, 'w': 0.0}
+    _last_repeat_time = {'a': 0.0, 'd': 0.0, 's': 0.0, 'w': 0.0}
+
+    _trigger_count = 0   # 0 = chưa nhấn lần nào trong phiên
+
     # stdin non-blocking để nhận lệnh runtime (z = reset zero)
     import msvcrt
+    import pyautogui
+    pyautogui.PAUSE = 0
 
     def _check_stdin_cmd():
         """Đọc lệnh từ terminal không blocking. Trả về chuỗi nếu có, None nếu không."""
@@ -579,31 +729,133 @@ def run(ser: serial.Serial) -> None:
                 # ── TẦNG 1: Lọc tín hiệu ──────────────────────
                 cleaned, fsr_l_out, fsr_r_out = run_filter_pipeline(raw)
 
+                # ── XỬ LÝ GÕ PHÍM VÀO NOTEPAD/GAME ────────────────────
+                # Mỗi nút xử lý độc lập, không phụ thuộc vào nhau.
+                # Dùng edge-detection: chỉ gửi phím khi trạng thái THAY ĐỔI,
+                # không gửi liên tục mỗi 20ms như trước.
+                cur_left    = cleaned.fs_left
+                cur_right   = cleaned.fs_right
+                cur_up      = cleaned.fs_up
+                cur_down    = cleaned.fs_down
+                cur_trigger = cleaned.fs_trigger
+                cur_thumb   = cleaned.fs_thumb
+
+                # ── Di chuyển: WASD (keyDown/keyUp theo trạng thái) ──────
+                # Cần keyDown/Up vì game cần giữ phím liên tục khi di chuyển.
+                # Chỉ gọi khi trạng thái thay đổi để tránh spam.
+                # Lấy thời gian hiện tại của vòng lặp
+                current_time = time.time()
+
+                # Cấu hình thời gian delay trước khi lặp (400ms) và tốc độ lặp (50ms mỗi chữ)
+                KEY_DELAY = 0.4
+                KEY_INTERVAL = 0.05
+
+                # ── Hướng LEFT (Phím 'a') ──────────────────────────────
+                if cur_left != _prev_fs_left:
+                    if cur_left:
+                        pyautogui.keyDown('a')
+                        _hold_start_time['a'] = current_time
+                        _last_repeat_time['a'] = current_time
+                    else:
+                        pyautogui.keyUp('a')
+                elif cur_left:  # Nếu đang giữ cần gạt trái
+                    if current_time - _hold_start_time['a'] >= KEY_DELAY:
+                        if current_time - _last_repeat_time['a'] >= KEY_INTERVAL:
+                            pyautogui.press('a')  # Tiếp tục gõ chữ vào Notepad
+                            _last_repeat_time['a'] = current_time
+
+                # ── Hướng RIGHT (Phím 'd') ─────────────────────────────
+                if cur_right != _prev_fs_right:
+                    if cur_right:
+                        pyautogui.keyDown('d')
+                        _hold_start_time['d'] = current_time
+                        _last_repeat_time['d'] = current_time
+                    else:
+                        pyautogui.keyUp('d')
+                elif cur_right:
+                    if current_time - _hold_start_time['d'] >= KEY_DELAY:
+                        if current_time - _last_repeat_time['d'] >= KEY_INTERVAL:
+                            pyautogui.press('d')
+                            _last_repeat_time['d'] = current_time
+
+                # ── Hướng UP (Phím 's') ───────────────────────────────
+                if cur_up != _prev_fs_up:
+                    if cur_up:
+                        pyautogui.keyDown('s')
+                        _hold_start_time['s'] = current_time
+                        _last_repeat_time['s'] = current_time
+                    else:
+                        pyautogui.keyUp('s')
+                elif cur_up:
+                    if current_time - _hold_start_time['s'] >= KEY_DELAY:
+                        if current_time - _last_repeat_time['s'] >= KEY_INTERVAL:
+                            pyautogui.press('s')
+                            _last_repeat_time['s'] = current_time
+
+                # ── Hướng DOWN (Phím 'w') ─────────────────────────────
+                if cur_down != _prev_fs_down:
+                    if cur_down:
+                        pyautogui.keyDown('w')
+                        _hold_start_time['w'] = current_time
+                        _last_repeat_time['w'] = current_time
+                    else:
+                        pyautogui.keyUp('w')
+                elif cur_down:
+                    if current_time - _hold_start_time['w'] >= KEY_DELAY:
+                        if current_time - _last_repeat_time['w'] >= KEY_INTERVAL:
+                            pyautogui.press('w')
+                            _last_repeat_time['w'] = current_time
+
+                # ── Trigger: đếm số lần nhấn → gửi phím số 1-9 ──────────
+                # Chỉ xử lý trên rising-edge (False → True).
+                # Lần 1 nhấn = gõ "1", lần 2 = "2", ..., lần 9 = "9",
+                # lần 10 quay lại "1".
+                if cur_trigger and not _prev_fs_trigger:
+                    _trigger_count = (_trigger_count % 9) + 1   # 1..9 cuộn vòng
+                    pyautogui.press(str(_trigger_count))         # gõ số vào Notepad/game
+
+                # ── Thumb: nhảy (Space) — chỉ nhấn 1 lần khi chạm nút ───
+                # Dùng rising-edge để tránh giữ Space liên tục.
+                if cur_thumb and not _prev_fs_thumb:
+                    pyautogui.press('space')
+
+                # Cập nhật trạng thái trước cho vòng lặp tiếp theo
+                _prev_fs_left    = cur_left
+                _prev_fs_right   = cur_right
+                _prev_fs_up      = cur_up
+                _prev_fs_down    = cur_down
+                _prev_fs_trigger = cur_trigger
+                _prev_fs_thumb   = cur_thumb
+
                 # ── TẦNG 2: Điều khiển game ────────────────────
                 mapper.process(cleaned)
 
-                # ── Terminal: IMU 3 trục + flight stick compact ─
+                # ── Terminal: IMU 3 trục + joystick map + flight stick ─
                 # Đọc biến toàn cục qua module reference để đảm bảo
                 # luôn lấy giá trị mới nhất (không bị stale binding)
-                if row_count % 10 == 0:
+                if row_count % 5 == 0:
                     m = _bme_mapper_mod
-                    fs_disp = (
-                        f"U={'█' if raw['fs_up']      else '░'}"
-                        f"D={'█' if raw['fs_down']    else '░'}"
-                        f"L={'█' if raw['fs_left']    else '░'}"
-                        f"R={'█' if raw['fs_right']   else '░'}"
-                        f" TRG={'█' if raw['fs_trigger'] else '░'}"
-                        f" THB={'█' if raw['fs_thumb']   else '░'}"
+                    display_text = _joy_multiline(
+                        jx             = cleaned.jx,
+                        jy             = cleaned.jy,
+                        pitch          = m.g_pitch,
+                        roll           = m.g_roll,
+                        yaw            = m.g_yaw,
+                        fs_up          = bool(raw["fs_up"]),
+                        fs_down        = bool(raw["fs_down"]),
+                        fs_left        = bool(raw["fs_left"]),
+                        fs_right       = bool(raw["fs_right"]),
+                        fs_trigger     = bool(raw["fs_trigger"]),
+                        fs_thumb       = bool(raw["fs_thumb"]),
+                        fsr_r          = cleaned.fsr_r,
+                        fsr_l          = cleaned.fsr_l,
+                        fsr_r_kg       = cleaned.fsr_r_kg,
+                        fsr_l_kg       = cleaned.fsr_l_kg,
+                        mode_label     = mapper.mode_label,
+                        tremor         = cleaned.tremor,
+                        trigger_count  = _trigger_count,
                     )
-                    print(
-                        f"\r  P={m.g_pitch:+6.1f}° R={m.g_roll:+6.1f}° Y={m.g_yaw:+6.1f}°"
-                        f"  FS:{fs_disp}"
-                        f"  JX={cleaned.jx:+4d} JY={cleaned.jy:+4d}"
-                        f"  FSR_R={cleaned.fsr_r:4.0f}%"
-                        f"  [{mapper.mode_label}]"
-                        + (" ⚠TREMOR" if cleaned.tremor else "        "),
-                        end="", flush=True,
-                    )
+                    _redraw_joy(display_text)
 
                 # ── TẦNG 3: Tính Newton từ kg ──────────────────
                 fsr_l_n      = round(fsr_l_out * GRAVITY, 4)   # N = kg × 9.81

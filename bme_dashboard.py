@@ -44,13 +44,13 @@ PDF_DIR     = BASE_DIR / "Patient_Records" / "PDF_Reports"
 
 # Ngưỡng lâm sàng tham khảo
 THRESHOLDS = {
-    "rom_pitch":    {"good": 30,  "warn": 15,  "unit": "°",     "higher": True,  "label": "aROM Pitch"},
-    "rom_roll":     {"good": 25,  "warn": 12,  "unit": "°",     "higher": True,  "label": "aROM Roll"},
-    "tremor_index": {"good": 35.0, "warn": 45.0, "unit": "°std",  "higher": False, "label": "Tremor Index"},
-    "grip_rate":    {"good": 10,  "warn": 5,   "unit": "lần/ph","higher": True,  "label": "Grip Rate"},
-    "active_ratio": {"good": 60,  "warn": 40,  "unit": "%",     "higher": True,  "label": "Active Ratio"},
-    "left_ratio":   {"good": 40,  "warn": 25,  "unit": "%",     "higher": True,  "label": "Tay liệt (%)"},
-    "fatigue_pct":  {"good": 75,  "warn": 50,  "unit": "%",     "higher": True,  "label": "Fatigue (ROM giữ được)"},
+    "rom_pitch":      {"good": 30,   "warn": 15,   "unit": "°",    "higher": True,  "label": "aROM Pitch"},
+    "rom_roll":       {"good": 25,   "warn": 12,   "unit": "°",    "higher": True,  "label": "aROM Roll"},
+    "tremor_index":   {"good": 3.0,  "warn": 6.0,  "unit": "°std", "higher": False, "label": "Tremor Index"},
+    "fsr_l_mean_kg":  {"good": 0.10, "warn": 0.04, "unit": "kg",   "higher": True,  "label": "Lực bóp TB (tay liệt)"},
+    "fsr_l_peak_kg":  {"good": 0.20, "warn": 0.10, "unit": "kg",   "higher": True,  "label": "Lực bóp đỉnh (tay liệt)"},
+    "left_ratio":     {"good": 40,   "warn": 25,   "unit": "%",    "higher": True,  "label": "Tay liệt (%)"},
+    "fatigue_pct":    {"good": 75,   "warn": 50,   "unit": "%",    "higher": True,  "label": "Fatigue (ROM giữ được)"},
 }
 
 C_GOOD  = "#27AE60"
@@ -150,8 +150,8 @@ def _fallback_metrics(df: pd.DataFrame) -> dict:
     is_right_active = (pitch_vel > 0.5) | (roll_vel > 0.5)
     right_active_count = is_right_active.sum()
 
-    # Tay trái: Joystick đẩy HOẶC Bóp FSR (Vì FSR đã chuyển sang trái)
-    is_left_active = (df['JX'].abs() > DEADZONE_JOY) | (df['JY'].abs() > DEADZONE_JOY) | (df['Grip'] > 20)
+    # Tay trái: Joystick đẩy HOẶC Bóp FSR — dùng > 0 đồng bộ với bme_report.py
+    is_left_active = (df['JX'].abs() > DEADZONE_JOY) | (df['JY'].abs() > DEADZONE_JOY) | (df['Grip'] > 0)
     left_active_count = is_left_active.sum()
 
     active_mask = is_right_active | is_left_active
@@ -166,38 +166,46 @@ def _fallback_metrics(df: pd.DataFrame) -> dict:
         left_ratio = 0.0
         right_ratio = 0.0
 
-    # 3. TÍNH CÁC THAM SỐ KHÁC
-    grip_edges  = (df["Grip"].diff() == 1).sum()
+    # 3. FSR TAY TRÁI (Mathiowetz et al., Bohannon 2006)
+    if "FSR_L_KG" in df.columns:
+        fsr_l = pd.to_numeric(df["FSR_L_KG"], errors="coerce").fillna(0.0)
+        fsr_l_mean_kg = round(float(fsr_l.mean()), 4)
+        fsr_l_peak_kg = round(float(fsr_l.max()), 4)
+    else:
+        fsr_l_mean_kg = 0.0
+        fsr_l_peak_kg = 0.0
+
+    # 4. TÍNH CÁC THAM SỐ KHÁC
     rom_pitch = df["Pitch"].max() - df["Pitch"].min()
-    rom_roll = df["Roll"].max() - df["Roll"].min()
-    
+    rom_roll  = df["Roll"].max()  - df["Roll"].min()
+
     # Chỉ số Mỏi (Fatigue): So sánh 20% đầu vs 20% cuối
     n_20 = int(len(df) * 0.2)
     if n_20 > 0:
         first_20, last_20 = df.iloc[:n_20], df.iloc[-n_20:]
         rom_first = (first_20['Pitch'].max() - first_20['Pitch'].min()) + (first_20['Roll'].max() - first_20['Roll'].min())
-        rom_last = (last_20['Pitch'].max() - last_20['Pitch'].min()) + (last_20['Roll'].max() - last_20['Roll'].min())
+        rom_last  = (last_20['Pitch'].max()  - last_20['Pitch'].min())  + (last_20['Roll'].max()  - last_20['Roll'].min())
         fatigue = (rom_last / rom_first * 100) if rom_first > 0 else 100
     else:
         fatigue = 100.0
 
     return {
-        "rom_pitch":    round(rom_pitch, 1),
-        "rom_roll":     round(rom_roll, 1),
-        "tremor_index": round(df["Pitch"].rolling(50).std().dropna().mean(), 2) if len(df) > 50 else 0.0,
-        "grip_count":   int(grip_edges),
-        "grip_rate":    round(grip_edges / (total_secs / 60) if total_secs > 0 else 0, 1),
-        "active_secs":  round(active_secs, 1),
-        "rest_secs":    round(total_secs - active_secs, 1),
-        "active_ratio": round(active_secs / total_secs * 100 if total_secs > 0 else 0, 1),
-        "left_ratio":   round(left_ratio, 1),
-        "right_ratio":  round(right_ratio, 1),
-        "fatigue_pct":  round(fatigue, 1),
-        "task_duration":round(total_secs, 1),
-        "pitch_min":    round(df["Pitch"].min(), 1), 
-        "pitch_max":    round(df["Pitch"].max(), 1),
-        "roll_min":     round(df["Roll"].min(),  1), 
-        "roll_max":     round(df["Roll"].max(),  1),
+        "rom_pitch":      round(rom_pitch, 1),
+        "rom_roll":       round(rom_roll,  1),
+        "tremor_index":   round(df["Pitch"].rolling(100).std().dropna().mean(), 2) if len(df) > 100 else 0.0,
+        "fsr_l_mean_kg":  fsr_l_mean_kg,
+        "fsr_l_peak_kg":  fsr_l_peak_kg,
+        "active_secs":    round(active_secs, 1),
+        "rest_secs":      round(total_secs - active_secs, 1),
+        "active_ratio":   round(active_secs / total_secs * 100 if total_secs > 0 else 0, 1),
+        "left_ratio":     round(left_ratio, 1),
+        "right_ratio":    round(right_ratio, 1),
+        "fatigue_pct":    round(fatigue, 1),
+        "task_duration":  round(total_secs, 1),
+        "pitch_min":      round(df["Pitch"].min(), 1),
+        "pitch_max":      round(df["Pitch"].max(), 1),
+        "roll_min":       round(df["Roll"].min(),  1),
+        "roll_max":       round(df["Roll"].max(),  1),
         "tremor_pitch": 0.0, "tremor_roll": 0.0,
         "early_rom":    0.0, "late_rom":    0.0,
     }
@@ -278,17 +286,22 @@ def chart_trend(mdf: pd.DataFrame, key: str) -> go.Figure:
 
 def chart_radar(mdf: pd.DataFrame) -> go.Figure:
     """Radar chart so sánh phiên đầu vs phiên cuối (normalize 0–100)."""
-    keys  = ["rom_pitch", "rom_roll", "active_ratio", "grip_rate", "left_ratio"]
+    keys  = ["rom_pitch", "rom_roll", "tremor_index", "fsr_l_peak_kg", "left_ratio", "fatigue_pct"]
     norms = {
-        "rom_pitch":    (0, 60),  "rom_roll":    (0, 45),
-        "active_ratio": (0, 100), "grip_rate":   (0, 20),
-        "left_ratio":   (0, 100),
+        "rom_pitch":     (0, 60),
+        "rom_roll":      (0, 45),
+        "tremor_index":  (0, 10),   # đảo: thấp = tốt → normalize ngược bên dưới
+        "fsr_l_peak_kg": (0, 0.5),
+        "left_ratio":    (0, 100),
+        "fatigue_pct":   (0, 100),
     }
     labels = [THRESHOLDS[k]["label"] for k in keys]
 
     def normalize(key, val):
         lo, hi = norms[key]
-        return min(100, max(0, (val - lo) / (hi - lo) * 100)) if hi > lo else 0
+        raw = min(100, max(0, (val - lo) / (hi - lo) * 100)) if hi > lo else 0
+        # Tremor: thấp là tốt → đảo chiều
+        return (100 - raw) if key == "tremor_index" else raw
 
     fig = go.Figure()
     sessions_to_show = []
@@ -476,7 +489,7 @@ def main():
         # ── 7 KPI phiên mới nhất ────────────────────────────────────────────
         st.markdown("## Kết quả phiên mới nhất")
         kpi_keys = ["rom_pitch", "rom_roll", "tremor_index",
-                    "grip_rate", "active_ratio", "left_ratio", "fatigue_pct"]
+                    "fsr_l_mean_kg", "fsr_l_peak_kg", "left_ratio", "fatigue_pct"]
 
         cols = st.columns(7)
         for col, key in zip(cols, kpi_keys):
@@ -485,12 +498,13 @@ def main():
             delta = None
             if len(mdf) >= 2:
                 prev_val = mdf.iloc[-2][key]
-                delta    = round(val - prev_val, 1)
+                delta    = round(val - prev_val, 4 if "kg" in t["unit"] else 1)
             with col:
+                fmt = f"{val:.3f}" if t["unit"] == "kg" else f"{val:.1f}"
                 st.metric(
                     label=t["label"],
-                    value=f"{val:.1f} {t['unit']}",
-                    delta=f"{delta:+.1f}" if delta is not None else None,
+                    value=f"{fmt} {t['unit']}",
+                    delta=f"{delta:+.3f}" if (delta is not None and t["unit"] == "kg") else (f"{delta:+.1f}" if delta is not None else None),
                     delta_color="normal" if t["higher"] else "inverse",
                 )
 
@@ -527,7 +541,7 @@ def main():
         rows_cols = [row1[0], row1[1], row2[0], row2[1], row3[0], row3[1]]
 
         for i, key in enumerate(["rom_pitch", "rom_roll", "tremor_index",
-                                   "active_ratio", "grip_rate", "fatigue_pct"]):
+                                   "fsr_l_mean_kg", "fsr_l_peak_kg", "fatigue_pct"]):
             with rows_cols[i]:
                 st.plotly_chart(chart_trend(mdf, key), use_container_width=True)
 
@@ -550,7 +564,7 @@ def main():
         st.markdown("### Chỉ số phiên này")
         cols = st.columns(7)
         kpi_keys = ["rom_pitch", "rom_roll", "tremor_index",
-                    "grip_rate", "active_ratio", "left_ratio", "fatigue_pct"]
+                    "fsr_l_mean_kg", "fsr_l_peak_kg", "left_ratio", "fatigue_pct"]
         for col, key in zip(cols, kpi_keys):
             t   = THRESHOLDS[key]
             val = selected_row[key]
@@ -687,18 +701,18 @@ def main():
 
         # Bảng tất cả phiên
         display_cols = {
-            "session_no": "Phiên",
-            "date_label": "Ngày/Giờ",
-            "rom_pitch":    "aROM Pitch°",
-            "rom_roll":     "aROM Roll°",
-            "tremor_index": "Tremor",
-            "grip_rate":    "Grip/phút",
-            "active_ratio": "Active%",
-            "left_ratio":   "Tay trái%",
-            "fatigue_pct":  "Fatigue%",
-            "task_duration": "Thời gian(s)",
+            "session_no":     "Phiên",
+            "date_label":     "Ngày/Giờ",
+            "rom_pitch":      "aROM Pitch°",
+            "rom_roll":       "aROM Roll°",
+            "tremor_index":   "Tremor",
+            "fsr_l_mean_kg":  "Lực TB (kg)",
+            "fsr_l_peak_kg":  "Lực đỉnh (kg)",
+            "left_ratio":     "Tay liệt%",
+            "fatigue_pct":    "Fatigue%",
+            "task_duration":  "Thời gian(s)",
         }
-        display_df = mdf[list(display_cols.keys())].rename(columns=display_cols)
+        display_df = mdf[[c for c in display_cols if c in mdf.columns]].rename(columns=display_cols)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         # Download CSV
@@ -713,7 +727,7 @@ def main():
         st.markdown("---")
         st.markdown("### Xu hướng toàn bộ 7 tham số")
         all_keys = ["rom_pitch", "rom_roll", "tremor_index",
-                    "grip_rate", "active_ratio", "left_ratio", "fatigue_pct"]
+                    "fsr_l_mean_kg", "fsr_l_peak_kg", "left_ratio", "fatigue_pct"]
         for key in all_keys:
             st.plotly_chart(chart_trend(mdf, key), use_container_width=True)
 

@@ -58,6 +58,8 @@
 import time
 import ctypes
 import ctypes.wintypes
+from pynput.mouse import Controller
+_pynput_mouse = Controller()
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -76,6 +78,10 @@ g_yaw:   float = 0.0
 g_dpitch: float = 0.0
 g_droll:  float = 0.0
 g_dyaw:   float = 0.0
+
+#: Di chuyển chuột frame hiện tại (pixel) — 0 nếu dead zone hoặc chưa vượt ngưỡng
+g_mouse_dx: int = 0
+g_mouse_dy: int = 0
 
 #: Góc tham chiếu "zero" — reset bằng reset_angle_zero()
 g_pitch_zero: float = 0.0
@@ -321,8 +327,9 @@ class MapperConfig:
     joy_threshold:  int   = 20      # % ngưỡng WASD (-100..+100)
 
     # ── Camera / Cursor sensitivity ───────────────────────────
-    camera_sens:    float = 0.18    # pixel / độ — GAME MODE
-    camera_dzone:   float = 5.0     # deadzone (°)
+    camera_sens:    float = 0.6     # SENSITIVITY
+    camera_dzone:   float = 8.0     # DEAD_ZONE
+    imu_smooth:     float = 0.75    # SMOOTH  
     ui_sens:        float = 2.8     # pixel / độ — UI MODE (nhạy hơn)
     ui_dzone:       float = 3.0     # deadzone nhỏ hơn trong UI
 
@@ -354,6 +361,7 @@ class MapperConfig:
     haptic_b2_hotbar:       int =  80
     haptic_b2_ui_enter:     int = 160
     haptic_b2_ui_exit:      int = 100
+
 
 
 # ────────────────────────────────────────────────────────────
@@ -442,6 +450,8 @@ class MapperState:
     imu_prev_pitch: float = 0.0
     imu_prev_roll:  float = 0.0
     imu_prev_yaw:   float = 0.0
+    smooth_x: float = 0.0
+    smooth_y: float = 0.0
 
     # ── Fatigue tracking (FSR_L — chỉ đo, không gửi game) ─────
     fsr_l_history: list = field(default_factory=list)   # lưu % gần nhất
@@ -639,18 +649,16 @@ class BMEMapper:
     # ────────────────────────────────────────────────────────
 
     def _handle_flight_stick(self, inp: CleanedInput) -> None:
-        # Mapping theo thực tế phần cứng:
-        #   fs_trigger=1 → lên   → W
-        #   fs_down=1    → trái  → A
-        #   fs_right=1   → xuống → S
-        #   fs_up=1      → phải  → D
-        #   fs_left=1    → trigger vật lý (hotbar/inventory)
-        #   fs_thumb=1   → thumb vật lý (space/shift)
+        # Chuẩn hóa lại chuẩn theo đúng chức năng tự nhiên của các switch điều hướng:
+        #   fs_up=1      → Tiến  → W
+        #   fs_down=1    → Lùi   → S
+        #   fs_left=1    → Trái  → A
+        #   fs_right=1   → Phải  → D
         want = {
-            "w": inp.fs_trigger,
-            "a": inp.fs_down,
-            "s": inp.fs_right,
-            "d": inp.fs_up,
+            "w": inp.fs_up,
+            "a": inp.fs_left,
+            "s": inp.fs_down,
+            "d": inp.fs_right,
         }
         if want["w"] and want["s"]: want["w"] = want["s"] = False
         if want["a"] and want["d"]: want["a"] = want["d"] = False
@@ -670,11 +678,11 @@ class BMEMapper:
         self._handle_fs_thumb(inp)
 
     def _handle_fs_trigger(self, inp: CleanedInput) -> None:
-        """Trigger vật lý (fs_left=1): tap → hotbar 1→9→1, hold 3s → I (inventory Luanti)."""
+        """Trigger vật lý (fs_trigger=1): tap → hotbar 1→9→1, hold 3s → I (inventory Luanti)."""
         s   = self.state
         cfg = self.cfg
         now = time.time()
-        pressed = inp.fs_left
+        pressed = inp.fs_trigger  # Đổi từ inp.fs_left về đúng nút trigger vật lý
 
         if pressed and not s.fs_trigger_was:
             s.fs_trigger_t     = now
@@ -697,7 +705,7 @@ class BMEMapper:
             s.fs_trigger_armed = False
 
         s.fs_trigger_was = pressed
-
+        
     def _handle_fs_thumb(self, inp: CleanedInput) -> None:
         """Thumb vật lý (fs_thumb=1): tap → Space (nhảy), hold 3s → Shift (sneak)."""
         s   = self.state
@@ -801,69 +809,45 @@ class BMEMapper:
 
     def _handle_imu(self, inp: CleanedInput) -> None:
         """
-        MPU6050 → Mouse move theo kiểu Air Mouse (góc tuyệt đối so với base).
-
-        NGUYÊN TẮC (từ Air-Mouse project):
-          • Lần đầu chạy: lưu góc hiện tại làm base (zero)
-          • delta = góc_hiện_tại − base
-          • mouse_move = delta × sensitivity
-          • Tay thẳng (delta=0) → chuột đứng yên
-          • Nghiêng 10° → chuột lệch 10×sens pixel
-          • Trả tay về thẳng → chuột về chỗ cũ
-          • Deadzone: |delta| < dzone → bỏ qua rung nhỏ
-
-        GAME MODE : relative move (MOUSEEVENTF_MOVE) — camera FPS
-        UI MODE   : absolute move (SetCursorPos) — con trỏ inventory
+        Sử dụng 100% logic và pynput từ Mouse.py đã test thành công.
+        X = Roll (Nghiêng trái/phải)
+        Y = Pitch (Ngửa/gập)
         """
-        s   = self.state
-        cfg = self.cfg
-
-        # Cập nhật biến toàn cục (luôn chạy)
+        # 1. Cập nhật góc toàn cục để bme_controller đọc
         update_global_angles(inp.pitch, inp.roll, inp.yaw)
 
-        # Khởi tạo base lần đầu (hoặc sau khi reset zero)
-        if s.imu_prev_pitch == 0.0 and s.imu_prev_roll == 0.0:
-            s.imu_prev_pitch = inp.pitch
-            s.imu_prev_roll  = inp.roll
-            s.imu_prev_yaw   = inp.yaw
+        # 2. Lấy thông số từ cấu hình
+        sens   = self.cfg.camera_sens
+        dead   = self.cfg.camera_dzone
+        smooth = self.cfg.imu_smooth
 
-        # Delta so với base (góc tuyệt đối)
-        dp = inp.pitch - s.imu_prev_pitch   # dương = ngửa lên → chuột lên
-        dr = inp.roll  - s.imu_prev_roll    # dương = nghiêng phải → chuột phải
+        # 3. Hàm tính toán chuẩn 100% từ Mouse.py
+        def process(value, dead_zone):
+            if abs(value) < dead_zone:
+                return 0.0
+            sign = 1 if value > 0 else -1
+            magnitude = (abs(value) - dead_zone) * 0.4
+            return sign * magnitude
 
-        # Chọn sensitivity / deadzone theo mode và tremor
-        if s.ui_mode:
-            sens  = cfg.ui_sens
-            dzone = cfg.ui_dzone
-            if inp.tremor:
-                sens  *= cfg.ui_tremor_sens_scale
-                dzone *= cfg.ui_tremor_dzone_scale
-        else:
-            sens  = cfg.camera_sens
-            dzone = cfg.camera_dzone
-            if inp.tremor:
-                sens  *= cfg.tremor_sens_scale
-                dzone *= cfg.tremor_dzone_scale
+        # 4. Tính toán dx, dy (Trục X = roll, Trục Y = pitch)
+        dx = process(inp.roll, dead)
+        dy = process(-inp.pitch, dead)
 
-        # Áp deadzone
-        move_x = move_y = 0.0
-        if abs(dr) > dzone:
-            move_x = (abs(dr) - dzone) * sens * (1 if dr > 0 else -1)
-        if abs(dp) > dzone:
-            move_y = (abs(dp) - dzone) * sens * (-1 if dp > 0 else 1)
+        # 5. Làm mượt (Smooth)
+        self.state.smooth_x = self.state.smooth_x * smooth + dx * (1 - smooth)
+        self.state.smooth_y = self.state.smooth_y * smooth + dy * (1 - smooth)
 
-        if move_x or move_y:
-            if s.ui_mode:
-                # UI: absolute move — đặt cursor đúng vị trí
-                # Lấy vị trí hiện tại rồi cộng delta
-                pt = ctypes.wintypes.POINT()
-                _user32.GetCursorPos(ctypes.byref(pt))
-                nx = max(0, min(pt.x + int(move_x), _get_screen_w() - 1))
-                ny = max(0, min(pt.y + int(move_y), _get_screen_h() - 1))
-                _user32.SetCursorPos(nx, ny)
-            else:
-                # GAME: relative move — camera FPS không bị giới hạn
-                _send_mouse(MOUSEEVENTF_MOVE, int(move_x), int(move_y))
+        move_x = int(self.state.smooth_x * sens)
+        move_y = int(self.state.smooth_y * sens)
+
+        # 6. Cập nhật biến toàn cục để controller hiển thị
+        import bme_mapper as _self_mod
+        _self_mod.g_mouse_dx = move_x
+        _self_mod.g_mouse_dy = move_y
+
+        # 7. Điều khiển chuột bằng pynput y như file test
+        if move_x != 0 or move_y != 0:
+            _pynput_mouse.move(move_x, move_y)
 
     # ────────────────────────────────────────────────────────
     #  FSR TAY PHẢI → TAP / HOLD (GAME) | CLICK (UI)

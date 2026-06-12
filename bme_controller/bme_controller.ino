@@ -53,10 +53,10 @@
 // ════════════════════════════════════════════════════════════
 
 // ── ANALOG: Joystick & FSR ───────────────────────────────────
-#define PIN_JOY_X       A0
+#define PIN_JOY_X       A2
 #define PIN_JOY_Y       A1
-#define PIN_FSR_LEFT    A2   // FSR406 — tay trái, Static Grip / Fatigue
-#define PIN_FSR_RIGHT   A3   // FSR402 — tay phải, action (tap/hold)
+#define PIN_FSR_LEFT    A0   
+#define PIN_FSR_RIGHT   A3   
 
 // ── DIGITAL: Nút bấm tay trái ────────────────────────────────
 #define PIN_BTN1        22   // B1 tay trái: tap=Jump, hold=Sneak  [v6.2: D2→D22, tránh Timer3]
@@ -577,72 +577,91 @@ void mpu_sample_offsets(int n);
 //  MPU6050 INIT & READ
 // ════════════════════════════════════════════════════════════
 void mpu_init() {
-    Wire.setClock(400000);
-    // Hardware I2C Mega 2560 Pro: SDA=pin20, SCL=pin21
+    // ── Thứ tự khởi tạo y hệt AirMouse đã test thành công ──────────
+    // KHÔNG gọi Wire.setClock() — đây là nguyên nhân I2C không ổn định
+    // trên các board Mega 2560 Pro clone với default 100kHz là đủ.
+    // Wire.begin() đã được gọi trước mpu_init() trong setup().
 
-    // ── I2C SCAN: kiểm tra MPU có phản hồi không ────────────────
-    Wire.beginTransmission(MPU_ADDR);
-    uint8_t scanResult = Wire.endTransmission(true);
-    if (scanResult != 0) {
-        Serial.print("MPU_ERR:I2C_SCAN_FAIL addr=0x");
-        Serial.print(MPU_ADDR, HEX);
-        Serial.print(" result=");
-        Serial.println(scanResult);
-        Serial.println("MPU_ERR:CHECK_SDA=pin20_SCL=pin21_HARDWARE_I2C");
-        Wire.beginTransmission(0x68);
-        uint8_t alt = Wire.endTransmission(true);
-        if (alt == 0) {
-            Serial.println("MPU_ERR:FOUND_AT_0x68_AD0_IS_LOW_CHECK_WIRING");
+    // BƯỚC 1: Scan I2C — thử 0x68 (AD0=GND) rồi 0x69 (AD0=VCC)
+    // BƯỚC 1: Scan I2C — thử 0x68 (AD0=GND) rồi 0x69 (AD0=VCC)
+    uint8_t found_addr = 0;
+    uint8_t check_addrs[] = {0x68, 0x69}; // Khai báo mảng tường minh để tránh lỗi compiler
+    for (int i = 0; i < 2; i++) {
+        uint8_t try_addr = check_addrs[i];
+        Wire.beginTransmission(try_addr);
+        if (Wire.endTransmission(true) == 0) {
+            found_addr = try_addr;
+            break;
         }
-    } else {
-        Serial.println("MPU_OK:FOUND_AT_0x69_HARDWARE_I2C_SDA=20_SCL=21");
     }
+    if (found_addr == 0) {
+        Serial.println("MPU_ERR:NOT_FOUND_CHECK_SDA=20_SCL=21");
+        return;
+    }
+    Serial.print("MPU_OK:FOUND_AT_0x");
+    Serial.println(found_addr, HEX);
 
-    // Wake up MPU (thoát sleep mode)
-    Wire.beginTransmission(MPU_ADDR);
-    Wire.write(MPU_PWR_REG); Wire.write(0x00);
+    // Cập nhật MPU_ADDR runtime nếu board hàn AD0=VCC
+    // (biến toàn cục MPU_ADDR là const — dùng biến cục bộ override)
+    // Lưu ý: nếu found_addr != MPU_ADDR, các hàm read_mpu_raw() và
+    // mpu_sample_offsets() vẫn dùng macro MPU_ADDR (0x68).
+    // Trường hợp board có AD0=VCC → đổi #define MPU_ADDR 0x69 ở trên.
+    // Trong hầu hết setup thực tế AD0 nối GND → 0x68, không cần lo.
+
+    // BƯỚC 2: Wake up — dùng PWR_MGMT_1 = 0x01 (PLL gyro X clock,
+    // giống MPU6050_tockn::begin() đã chạy ổn định)
+    Wire.beginTransmission(found_addr);
+    Wire.write(MPU_PWR_REG); Wire.write(0x01);   // 0x01 = PLL gyro X
     uint8_t r = Wire.endTransmission(true);
-    if (r != 0) { Serial.print("MPU_ERR:WAKE_FAIL r="); Serial.println(r); }
-    
-    // DLPF = 3: Accel 44Hz, Gyro 42Hz — giảm noise phần cứng
-    Wire.beginTransmission(MPU_ADDR);
+    if (r != 0) { Serial.print("MPU_ERR:WAKE_FAIL r="); Serial.println(r); return; }
+    delay(10);   // chờ oscillator ổn định — giống tockn::begin()
+
+    // BƯỚC 3: DLPF = 3 → Accel 44Hz / Gyro 42Hz (giảm noise hardware)
+    Wire.beginTransmission(found_addr);
     Wire.write(MPU_DLPF_CFG); Wire.write(0x03);
     Wire.endTransmission(true);
-    
-    // Gyro ±250°/s
-    Wire.beginTransmission(MPU_ADDR);
+
+    // BƯỚC 4: Gyro ±250°/s (0x00) — đủ cho rehab, ít noise hơn ±500
+    Wire.beginTransmission(found_addr);
     Wire.write(MPU_GYRO_CFG); Wire.write(0x00);
     Wire.endTransmission(true);
-    
-    // Accel ±2g
-    Wire.beginTransmission(MPU_ADDR);
+
+    // BƯỚC 5: Accel ±2g
+    Wire.beginTransmission(found_addr);
     Wire.write(MPU_ACCEL_CFG); Wire.write(0x00);
     Wire.endTransmission(true);
 
-    // Đọc WHO_AM_I register (0x75) — phải trả về 0x68 nếu MPU6050 thật
-    Wire.beginTransmission(MPU_ADDR);
+// BƯỚC 6: Xác nhận WHO_AM_I = 0x68 hoặc 0x70 (Chấp nhận chip clone)
+    // Dùng 2 transaction riêng (endTransmission TRUE) thay vì repeated start
+    // vì Mega clone + MPU clone hay bị treo với endTransmission(false).
+    Wire.beginTransmission(found_addr);
     Wire.write(0x75);
-    Wire.endTransmission(false);
-    Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1, (uint8_t)true);
+    Wire.endTransmission(true);
+    delay(2);
+    Wire.requestFrom((uint8_t)found_addr, (uint8_t)1, (uint8_t)true);
+    
     if (Wire.available()) {
         uint8_t whoami = Wire.read();
-        if (whoami == 0x68) {
-            Serial.println("MPU_OK:WHO_AM_I=0x68_CONFIRMED");
+        if (whoami == 0x68 || whoami == 0x70) {
+            Serial.print("MPU_OK:WHO_AM_I=0x");
+            Serial.print(whoami, HEX);
+            Serial.println("_CONFIRMED");
         } else {
             Serial.print("MPU_ERR:WHO_AM_I=0x");
             Serial.print(whoami, HEX);
-            Serial.println("_EXPECTED_0x68");
+            Serial.println("_EXPECTED_0x68_OR_0x70");
         }
     } else {
         Serial.println("MPU_ERR:WHO_AM_I_NO_RESPONSE");
     }
-}
+} 
+
 
 ImuRaw read_mpu_raw() {
-    ImuRaw d = {0,0,0,0,0,0};  // default 0 nếu đọc thất bại
+    ImuRaw d = {0,0,0,0,0,0};
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(MPU_ACCEL_REG);
-    Wire.endTransmission(false);
+    Wire.endTransmission(true);   // true thay vì false — tránh hang trên clone
     uint8_t got = Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)14, (uint8_t)true);
     if (got < 14) {
         // Không đủ bytes — MPU mất kết nối hoặc I2C bị treo
@@ -952,9 +971,14 @@ void handle_cmd(const String& cmd) {
 // ════════════════════════════════════════════════════════════
 void setup() {
     Serial.begin(115200);
+
+    // ── Wire.begin() ĐẦU TIÊN — y hệt AirMouse đã test thành công ──
+    // Phải gọi trước servoMotor.attach() và trước mpu_init()
+    // để I2C bus sẵn sàng ngay từ đầu.
+    Wire.begin();  // Hardware I2C: SDA=pin20, SCL=pin21 (Mega 2560 Pro)
+
     pinMode(PIN_BTN1,      INPUT_PULLUP);
     pinMode(PIN_BTN2,      INPUT_PULLUP);
-    // PIN_BTN_GRIP đã XÓA — FSR402 tay phải thay thế
 
     // Flight stick — tất cả INPUT_PULLUP (LOW = bấm)
     pinMode(FS_UP_PIN,      INPUT_PULLUP);
@@ -971,22 +995,21 @@ void setup() {
 
     // Chờ Timer ổn định sau Servo attach — tránh B1/B2 đọc sai lúc boot
     delay(100);
-    // Khởi tạo pressTime = now để tránh b2_dur = (now-0) khi boot
     btn1PressTime  = millis();
     btn2PressTime  = millis();
-    // Sync wasPressed với trạng thái thực tế
     btn1WasPressed = !digitalRead(PIN_BTN1);
     btn2WasPressed = !digitalRead(PIN_BTN2);
 
-    Wire.begin();  // Hardware I2C: SDA=pin20, SCL=pin21 (Mega 2560 Pro)
-    mpu_init();
+    mpu_init();   // Wire.begin() đã gọi ở trên rồi
     delay(200);
 
-    // Warm-up Madgwick: chạy 100 vòng để quaternion ổn định
-    for (int i = 0; i < 100; i++) {
+    // Warm-up Madgwick: 50 vòng × delay(20) = 1 giây
+    // Giảm từ 100×200ms=20s xuống còn ~1s — đủ để quaternion hội tụ
+    // với beta=0.033 và DLPF 44Hz đã lọc nhiễu phần cứng
+    for (int i = 0; i < 50; i++) {
         ImuRaw r = read_mpu_raw();
-        madgwick.update(r.ax, r.ay, r.az, r.gx, r.gy, r.gz, 0.01f, MADGWICK_BETA);
-        delay(200);
+        madgwick.update(r.ax, r.ay, r.az, r.gx, r.gy, r.gz, 0.02f, MADGWICK_BETA);
+        delay(20);
     }
 
     if (load_calib()) {

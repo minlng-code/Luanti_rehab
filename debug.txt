@@ -3685,3 +3685,73 @@
   Separator
 -------------
 
+
+
+-------------
+  Separator
+-------------
+
+2026-06-08 16:46:15: WARNING[CurlFetch]: CurlFetchThread blocked for 355ms
+2026-06-08 16:46:22: ACTION[ServerStart]: Reading quests...
+2026-06-08 16:46:22: ACTION[ServerStart]: [doc] doc.mt opened.
+2026-06-08 16:46:22: ACTION[ServerStart]: [doc] doc.mt successfully read.
+2026-06-08 16:46:23: ACTION[ServerStart]: World seed = 14098338907345516269
+2026-06-08 16:46:23: ACTION[ServerStart]: VoxeLibre mapgen version = 0.91.2 initial version = 0.91.2
+2026-06-08 16:46:23: ACTION[ServerStart]: World created with Luanti version = 5.16.0-dev
+2026-06-08 16:46:23: ACTION[ServerStart]: [mcl_init] increased LuaJIT parameters. LuaJIT version: LuaJIT 2.1.0-beta3 with flags SSE3
+2026-06-08 16:46:23: ACTION[ServerStart]: [vl_cavesounds] Cave sounds are activated
+2026-06-08 16:46:23: ACTION[ServerStart]: [mcl_music] In-game music is activated
+2026-06-08 16:46:26: ACTION[ServerStart]: [mcl_weather] load_weather() changed the weather from clear to clear
+2026-06-08 16:46:26: ACTION[ServerStart]: [mcl_weather] Weather restored.
+2026-06-08 16:46:51: WARNING[ServerStart]: Decoration registered after mapgen core initialization: mcl_structures:mineshaft
+2026-06-08 16:46:59: WARNING[Main]: Irrlicht: SDL_PollEvent took too long: 219ms
+2026-06-08 16:47:23: ACTION[ServerStart]: World at [C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y]
+2026-06-08 16:47:23: ACTION[ServerStart]: Server for gameid="voxelibre" listening on 127.0.0.1:49546.
+2026-06-08 16:47:37: ACTION[Server]: singleplayer [127.0.0.1] joins game. List of players: singleplayer
+2026-06-08 16:47:38: ACTION[Server]: [mcl_music] Playing track: diminixed-pianowtune02, for scenario: overworld
+2026-06-08 16:47:38: WARNING[Main]: GenericCAO::addToScene(): Model extra_mobs_salmon.b3d is missing 12 more texture(s), this is deprecated.
+2026-06-08 16:49:19: ACTION[Server]: [doc] Wrote player data into C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y/doc.mt.
+2026-06-08 16:49:19: ACTION[Server]: singleplayer leaves game. List of players: 
+2026-06-08 16:49:19: ACTION[ServerStop]: Server: Shutting down
+2026-06-08 16:49:19: ACTION[ServerStop]: Writing quests to file
+2026-06-08 16:49:19: ACTION[ServerStop]: [doc] Server shuts down. Player data is about to be saved.
+2026-06-08 16:49:19: ACTION[ServerStop]: [doc] Wrote player data into C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y/doc.mt.
+
+
+-------------
+  Separator
+-------------
+
+2026-06-12 15:28:50: WARNING[Main]: Irrlicht: SDL_PollEvent took too long: 74ms
+
+
+-------------
+  Separator
+-------------
+
+2026-06-12 15:29:12: WARNING[Main]: Irrlicht: SDL_PollEvent took too long: 76ms
+2026-06-12 15:29:18: WARNING[Main]: Irrlicht: SDL_PollEvent took too long: 176ms
+2026-06-12 15:29:29: ACTION[ServerStart]: Reading quests...
+2026-06-12 15:29:29: ACTION[ServerStart]: [doc] doc.mt opened.
+2026-06-12 15:29:29: ACTION[ServerStart]: [doc] doc.mt successfully read.
+2026-06-12 15:29:29: ACTION[ServerStart]: World seed = 14098338907345516269
+2026-06-12 15:29:29: ACTION[ServerStart]: VoxeLibre mapgen version = 0.91.2 initial version = 0.91.2
+2026-06-12 15:29:29: ACTION[ServerStart]: World created with Luanti version = 5.16.0-dev
+2026-06-12 15:29:30: ACTION[ServerStart]: [mcl_init] increased LuaJIT parameters. LuaJIT version: LuaJIT 2.1.0-beta3 with flags SSE3
+2026-06-12 15:29:30: ACTION[ServerStart]: [vl_cavesounds] Cave sounds are activated
+2026-06-12 15:29:30: ACTION[ServerStart]: [mcl_music] In-game music is activated
+2026-06-12 15:29:33: ACTION[ServerStart]: [mcl_weather] load_weather() changed the weather from clear to clear
+2026-06-12 15:29:33: ACTION[ServerStart]: [mcl_weather] Weather restored.
+2026-06-12 15:30:08: WARNING[ServerStart]: Decoration registered after mapgen core initialization: mcl_structures:mineshaft
+2026-06-12 15:30:45: ACTION[ServerStart]: World at [C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y]
+2026-06-12 15:30:45: ACTION[ServerStart]: Server for gameid="voxelibre" listening on 127.0.0.1:52860.
+2026-06-12 15:30:56: ACTION[Server]: singleplayer [127.0.0.1] joins game. List of players: singleplayer
+2026-06-12 15:30:57: WARNING[Main]: GenericCAO::addToScene(): Model extra_mobs_salmon.b3d is missing 12 more texture(s), this is deprecated.
+2026-06-12 15:31:00: ACTION[Emerge-0]: [mcl_structures] mineshaft placed at (26,11,-152)
+2026-06-12 15:31:00: ACTION[Server]: [mcl_music] Playing track: Jester-Gift, for scenario: overworld
+2026-06-12 15:32:04: ACTION[Server]: [doc] Wrote player data into C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y/doc.mt.
+2026-06-12 15:32:04: ACTION[Server]: singleplayer leaves game. List of players: 
+2026-06-12 15:32:04: ACTION[ServerStop]: Server: Shutting down
+2026-06-12 15:32:04: ACTION[ServerStop]: Writing quests to file
+2026-06-12 15:32:04: ACTION[ServerStop]: [doc] Server shuts down. Player data is about to be saved.
+2026-06-12 15:32:04: ACTION[ServerStop]: [doc] Wrote player data into C:\Users\minhh\Downloads\Luanti_Rehab_App\bin\Release\..\..\worlds\y/doc.mt.
