@@ -1,0 +1,9 @@
+player_backend = sqlite3
+backend = sqlite3
+world_name = world1
+enable_damage = true
+creative_mode = false
+mod_storage_backend = sqlite3
+gameid = voxelibre
+auth_backend = sqlite3
+server_announce = false

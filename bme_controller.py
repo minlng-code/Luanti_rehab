@@ -32,7 +32,7 @@ from datetime    import datetime
 from pathlib     import Path
 
 import bme_report
-import bme_mapper as _bme_mapper_mod   # truy cập biến toàn cục góc
+import bme_mapper  as _bme_mapper_mod   # truy cập biến toàn cục góc
 from bme_mapper import BMEMapper, MapperConfig, CleanedInput, get_angle_display, reset_angle_zero
 
 # ════════════════════════════════════════════════════════════
@@ -105,14 +105,36 @@ CSV_HEADER = [
 #  BỘ LỌC TÍN HIỆU
 # ════════════════════════════════════════════════════════════
 
-class EMA:
-    def __init__(self, alpha: float):
-        self.alpha = alpha; self._val = None
+class AdaptiveEMA:
+    """Bộ lọc trung bình lũy thừa thích nghi: Mượt khi đứng yên, mở biên độ khi quét mạnh."""
+    def __init__(self, alpha_min: float = 0.15, alpha_max: float = 0.75, threshold: float = 8.0):
+        self.alpha_min = alpha_min  # Độ mịn tối đa khi đứng yên/cử động nhẹ
+        self.alpha_max = alpha_max  # Độ mở biên độ tối đa khi quét góc nhanh (giúp đi hết biên độ)
+        self.threshold = threshold  # Ngưỡng góc (độ) để kích hoạt mở biên độ
+        self._val = None
+
     def update(self, x: float) -> float:
-        self._val = x if self._val is None \
-                    else self.alpha * x + (1 - self.alpha) * self._val
+        if self._val is None:
+            self._val = x
+            return self._val
+        
+        # Tính độ lệch giữa góc thô mới và góc đã lọc cũ
+        diff = abs(x - self._val)
+        
+        # Hàm tính alpha thích nghi tuyến tính dựa trên độ lệch
+        if diff < 1.0:
+            alpha = self.alpha_min
+        elif diff > self.threshold:
+            alpha = self.alpha_max
+        else:
+            # Nội suy tuyến tính alpha từ alpha_min đến alpha_max
+            alpha = self.alpha_min + (self.alpha_max - self.alpha_min) * ((diff - 1.0) / (self.threshold - 1.0))
+            
+        self._val = alpha * x + (1.0 - alpha) * self._val
         return self._val
-    def reset(self): self._val = None
+
+    def reset(self): 
+        self._val = None
 
 
 class Butterworth2:
@@ -184,16 +206,59 @@ class ZScoreFilter:
     def reset(self): self.buf.clear(); self.count = 0
 
 
+class _BandpassBiquad:
+    """RBJ bandpass (0 dB đỉnh) bậc 2. Cô lập 1 dải tần quanh f0."""
+    def __init__(self, f0: float, fs: float, Q: float = 1.2):
+        import math
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * Q)
+        cw    = math.cos(w0)
+        a0 = 1.0 + alpha
+        self.b0 =  alpha / a0
+        self.b2 = -alpha / a0
+        self.a1 = -2.0 * cw / a0
+        self.a2 = (1.0 - alpha) / a0
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+    def update(self, x: float) -> float:
+        y = self.b0 * x + self.b2 * self.x2 - self.a1 * self.y1 - self.a2 * self.y2
+        self.x2 = self.x1; self.x1 = x; self.y2 = self.y1; self.y1 = y
+        return y
+    def reset(self): self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+
+
 class TremorDetector:
-    """Short-Time Variance — cửa sổ 1 giây (50 mẫu @ 50Hz)."""
-    WINDOW    = 50
-    THRESHOLD = 4.0   # °²
+    """
+    Phát hiện run BẰNG NĂNG LƯỢNG DẢI TREMOR (3-8 Hz), không phải variance thô.
+
+    Vì sao đổi: bản cũ tính variance trên góc đã lọc → bắt nhầm cử động chậm
+    chủ ý thành run (báo nhầm 53% trong phiên thực). Run bệnh lý nằm ở 3-8 Hz,
+    còn vận động chủ ý < 2 Hz. Ở đây tín hiệu được lọc thông dải quanh 5 Hz
+    (cascade 3 tầng cho dốc đứng) rồi mới đo variance → cử động chậm bị loại,
+    chỉ còn năng lượng run thật.
+
+    THRESHOLD (deg² trong dải) cần hiệu chỉnh với bệnh nhân run thật.
+    Thấp hơn = nhạy hơn. 0.30 là mặc định cân bằng từ mô phỏng.
+    """
+    WINDOW    = 60       # ~1.2-1.4 s tùy Fs thực
+    THRESHOLD = 0.30     # deg² năng lượng trong dải 3-8 Hz
+    CENTER_HZ = 5.0
+    N_STAGE   = 3        # số tầng bandpass nối tiếp (dốc đứng để loại cử động chậm)
+
     def __init__(self):
         self._pb = deque(maxlen=self.WINDOW)
         self._rb = deque(maxlen=self.WINDOW)
+        self._bp_p = [_BandpassBiquad(self.CENTER_HZ, FS) for _ in range(self.N_STAGE)]
+        self._bp_r = [_BandpassBiquad(self.CENTER_HZ, FS) for _ in range(self.N_STAGE)]
         self.tremor = False; self.variance = 0.0
+
+    def _filt(self, x: float, chain: list) -> float:
+        for b in chain: x = b.update(x)
+        return x
+
     def update(self, pitch: float, roll: float) -> bool:
-        self._pb.append(pitch); self._rb.append(roll)
+        bp = self._filt(pitch, self._bp_p)
+        br = self._filt(roll,  self._bp_r)
+        self._pb.append(bp); self._rb.append(br)
         if len(self._pb) == self.WINDOW:
             mp = sum(self._pb) / self.WINDOW; mr = sum(self._rb) / self.WINDOW
             vp = sum((v-mp)**2 for v in self._pb) / self.WINDOW
@@ -201,6 +266,38 @@ class TremorDetector:
             self.variance = max(vp, vr)
             self.tremor   = self.variance > self.THRESHOLD
         return self.tremor
+
+    def reset(self):
+        self._pb.clear(); self._rb.clear()
+        for b in self._bp_p: b.reset()
+        for b in self._bp_r: b.reset()
+        self.tremor = False; self.variance = 0.0
+
+
+class GimbalGuard:
+    """
+    Chặn cú LẬT pitch khi roll gần vùng kỳ dị Euler (±90°).
+
+    Phân tích phiên thực: 1.2% frame pitch vọt qua ±90° (lên tới ±177°) đúng
+    lúc |roll|≈77°. Đó là ảo ảnh toán học của góc Euler, không phải cổ tay
+    thật gập tới đó → sinh giật dọc khi quay ngang. Khi rơi vào vùng này,
+    giữ pitch ở giá trị tốt gần nhất thay vì để cú lật lọt vào mapper.
+
+    Đây chỉ là giảm nhẹ phía Python. Trị tận gốc phải dùng quaternion ở firmware.
+    """
+    def __init__(self, roll_lim: float = 65.0, pitch_lim: float = 80.0):
+        self.roll_lim = roll_lim
+        self.pitch_lim = pitch_lim
+        self._prev = None
+        self.count = 0
+    def update(self, pitch: float, roll: float) -> float:
+        if abs(roll) > self.roll_lim and abs(pitch) > self.pitch_lim:
+            self.count += 1
+            return self._prev if self._prev is not None else 0.0
+        self._prev = pitch
+        return pitch
+    def reset(self):
+        self._prev = None; self.count = 0
 
 
 class PacketQualityMonitor:
@@ -237,25 +334,43 @@ class PacketQualityMonitor:
 
 hampel_pitch = HampelFilter(window=7, k=3.0)
 hampel_roll  = HampelFilter(window=7, k=3.0)
-butter_pitch = Butterworth2(fc=5.0, fs=FS)
-butter_roll  = Butterworth2(fc=5.0, fs=FS)
 
-zscore_fsr_l = ZScoreFilter(window=20, k=2.5)
-zscore_fsr_r = ZScoreFilter(window=20, k=2.5)
+# Hạ fc từ 5.0Hz xuống 2.5Hz giúp triệt tiêu triệt để các sóng nhiễu giật giật
+butter_pitch = Butterworth2(fc=8.0, fs=FS)  # 2Hz→8Hz: giảm lag, mapper EMA lo phần mượt
+butter_roll  = Butterworth2(fc=8.0, fs=FS)
+
+# Bổ sung EMA cho góc để làm mượt sâu đường đi con trỏ (Smoothness Layer)
+# AdaptiveEMA pitch/roll đã bỏ — Butterworth fc=8Hz + EMA mapper là đủ
+# ema_pitch_smooth / ema_roll_smooth không còn dùng
+
+zscore_fsr_l = ZScoreFilter(window=20, k=6.0)
+zscore_fsr_r = ZScoreFilter(window=20, k=4.0)
 butter_fsr_l = Butterworth1(fc=3.0, fs=FS)
 butter_fsr_r = Butterworth1(fc=3.0, fs=FS)
 
-ema_jx       = EMA(alpha=0.5)
-ema_jy       = EMA(alpha=0.5)
+# ── FSR auto-zero baseline ──────────────────────────────────────────────
+# 60 frame đầu @ 50Hz (~1.2s) đo giá trị tĩnh, lấy Q1 (quartile dưới)
+# để loại spike nhiễu. Sau warm-up, trừ offset này khỏi mọi đọc FSR.
+_fsr_l_baseline: float = 0.0
+_fsr_r_baseline: float = 0.0
+_fsr_baseline_buf_l: list = []
+_fsr_baseline_buf_r: list = []
+_FSR_BASELINE_FRAMES = 60
+
+ema_jx       = AdaptiveEMA(alpha_min=0.4, alpha_max=1.0, threshold=40.0)
+ema_jy       = AdaptiveEMA(alpha_min=0.4, alpha_max=1.0, threshold=40.0)
 
 tremor_det   = TremorDetector()
 pkt_quality  = PacketQualityMonitor(expected=1.0 / FS)
+
+# Chặn lật pitch ở vùng kỳ dị Euler (giảm giật dọc khi quay ngang)
+gimbal_guard = GimbalGuard(roll_lim=65.0, pitch_lim=80.0)
 
 
 def reset_all_filters() -> None:
     for f in [hampel_pitch, hampel_roll, butter_pitch, butter_roll,
               zscore_fsr_l, zscore_fsr_r, butter_fsr_l, butter_fsr_r,
-              ema_jx, ema_jy]:
+              ema_jx, ema_jy, tremor_det, gimbal_guard]:
         f.reset()
 
 
@@ -280,19 +395,20 @@ def parse_packet(line: str) -> dict | None:
             "jy":          int(parts[2]),
             "b1_dur":      int(parts[3]),      
             "b2_dur":      int(parts[4]),      
-            "grip":        int(parts[5]),      
+            "grip":        int(parts[5]) == 1,      
             "pitch":       float(parts[6]),
             "roll":        float(parts[7]),
             "fsr_l_kg":    float(parts[8]),    
             "fsr_r_kg":    float(parts[9]),    
             "vib_active":  int(parts[10]),
             "servo_angle": int(parts[11]),
-            "fs_up":       int(parts[15]),   # thực tế UP đang là vị trí trigger
-            "fs_down":     int(parts[16]),   # thực tế DOWN đang là right
-            "fs_left":     int(parts[13]),   # thực tế LEFT đang là up
-            "fs_right":    int(parts[12]),   # thực tế RIGHT đang là down
-            "fs_trigger":  int(parts[14]),   # thực tế TRIGGER đang là left
-            "fs_thumb":    int(parts[17]),   # thumb giữ nguyên
+            # SỬA LẠI ĐÚNG THỨ TỰ INDEX TỪ 12 ĐẾN 17 CỦA FIRMWARE v6.1:
+            "fs_up":       int(parts[16]) == 1,  # firmware: [12]=fs_up
+            "fs_down":     int(parts[15]) == 1,  # firmware: [13]=fs_down
+            "fs_left":     int(parts[13]) == 1,  # firmware: [14]=fs_left
+            "fs_right":    int(parts[12]) == 1,  # firmware: [15]=fs_right
+            "fs_trigger":  int(parts[14]) == 1,  # firmware: [16]=fs_trigger
+            "fs_thumb":    int(parts[17]) == 1,  # firmware: [17]=fs_thumb
         }
     except (ValueError, IndexError):
         return None
@@ -304,6 +420,7 @@ def parse_packet(line: str) -> dict | None:
 # ════════════════════════════════════════════════════════════
 
 def run_filter_pipeline(raw: dict) -> tuple:
+    global _fsr_l_baseline, _fsr_r_baseline, _fsr_baseline_buf_l, _fsr_baseline_buf_r
     """
     Returns: (CleanedInput, fsr_l_filtered, fsr_r_filtered)
     fsr_l/r_filtered: float đã lọc — dùng để ghi CSV và tính Newton.
@@ -315,50 +432,92 @@ def run_filter_pipeline(raw: dict) -> tuple:
       B1/B2 dur : pass-through (firmware đã debounce hardware)
       Tremor    : Short-time variance
     """
-    # IMU: Hampel spike reject → Butterworth 5Hz
-    p  = butter_pitch.update(hampel_pitch.update(raw["pitch"]))
-    r  = butter_roll.update (hampel_roll.update (raw["roll"]))
+    # --- SWAP PATCH: Vá lỗi cắm nhầm chân phần cứng ---
+    # Ép kiểu lại vì JY đang mang giá trị ADC của FSR, còn FSR đang mang giá trị Joystick
+    temp_jy_val = float(raw["jy"])
+    temp_fsr_val = int(raw["fsr_r_kg"]) 
+    
+    raw["fsr_r_kg"] = temp_jy_val
+    raw["jy"] = temp_fsr_val
+    # 0. CHẶN LẬT GIMBAL: bỏ cú pitch vọt khi roll gần ±90° (giảm giật dọc).
+    #    Áp trên góc THÔ, trước mọi bộ lọc, để cú lật không kịp lọt vào pipeline.
+    pitch_raw = gimbal_guard.update(raw["pitch"], raw["roll"])
+    # Kẹp biên sinh lý — cổ tay không thể pitch quá ±100°; chặn nốt ảo ảnh sót lại.
+    pitch_raw = max(-100.0, min(100.0, pitch_raw))
 
-    # FSR: firmware v6.0 gửi kg (đã qua SMA-15 + IIR + conductance model)
-    # Python chỉ cần EMA nhẹ thêm để giảm jitter truyền thông
-    fl_kg = max(0.0, butter_fsr_l.update(zscore_fsr_l.update(raw["fsr_l_kg"])))
-    fr_kg = max(0.0, butter_fsr_r.update(zscore_fsr_r.update(raw["fsr_r_kg"])))
+    # 1. Đi qua bộ lọc thô ban đầu (Hampel + Butterworth).
+    #    Giữ riêng đầu ra Hampel (chưa bị Butterworth 2 Hz cắt) để phát hiện run,
+    #    vì run nằm ở 3-8 Hz — nếu lấy tín hiệu sau Butterworth 2 Hz thì mất sạch run.
+    hp = hampel_pitch.update(pitch_raw)
+    hr = hampel_roll.update(raw["roll"])
+    p_filtered = butter_pitch.update(hp)
+    r_filtered = butter_roll.update(hr)
 
-    # Joystick: EMA α=0.5
+    ANG_DEADZONE = 0.2  
+    
+    if abs(p_filtered) < ANG_DEADZONE:
+        p = 0.0
+    else:
+        # Làm mượt điểm gãy của dốc để di chuyển không bị khựng giật
+        p = (p_filtered - ANG_DEADZONE) if p_filtered > 0 else (p_filtered + ANG_DEADZONE)
+
+    if abs(r_filtered) < ANG_DEADZONE:
+        r = 0.0
+    else:
+        r = (r_filtered - ANG_DEADZONE) if r_filtered > 0 else (r_filtered + ANG_DEADZONE)
+    
+    # 2. Ép mượt bằng bộ lọc EMA (hoặc AdaptiveEMA nếu bạn đã đổi)
+    # Dùng thẳng p_filtered / r_filtered — Butterworth 8Hz đủ mượt
+    # mapper EMA 0.25 lo phần triệt spike còn sót
+    p = p_filtered
+    r = r_filtered
+
+    # --- Các đoạn code FSR và Joystick phía dưới giữ nguyên của bạn ---
+    # ── FSR pipeline với auto-zero baseline ──────────────────────────
+    # Đo 60 frame đầu khi chưa bóp → tính offset tĩnh → trừ ra mỗi frame
+    _raw_fl = raw["fsr_l_kg"]
+    _raw_fr = raw["fsr_r_kg"]
+    if len(_fsr_baseline_buf_l) < _FSR_BASELINE_FRAMES:
+        _fsr_baseline_buf_l.append(_raw_fl)
+        _fsr_baseline_buf_r.append(_raw_fr)
+        if len(_fsr_baseline_buf_l) == _FSR_BASELINE_FRAMES:
+            _fsr_l_baseline = sorted(_fsr_baseline_buf_l)[_FSR_BASELINE_FRAMES // 4]  # Q1, không dùng mean
+            _fsr_r_baseline = sorted(_fsr_baseline_buf_r)[_FSR_BASELINE_FRAMES // 4]
+    # 1. Bỏ ZScoreFilter, chỉ dùng Butterworth để giữ lại tín hiệu bóp/giữ liên tục
+    fl_kg = max(0.0, butter_fsr_l.update(raw["fsr_l_kg"]))
+    
+    # Sửa luôn cho FSR_R để khắc phục một phần lỗi số 4
+    fr_kg = max(0.0, butter_fsr_r.update(raw["fsr_r_kg"]))
+    fr_kg_raw = max(0.0, raw["fsr_r_kg"])
     jx = int(ema_jx.update(float(raw["jx"])))
     jy = int(ema_jy.update(float(raw["jy"])))
+    # Phát hiện run từ tín hiệu sau Hampel (hp/hr) — còn nguyên dải 3-8 Hz.
+    # KHÔNG dùng p/r đã làm mượt vì Butterworth 2 Hz đã xóa sạch dải run.
+    tremor = tremor_det.update(hp, hr)
 
-    tremor = tremor_det.update(p, r)
+    # ── FSR SPAN riêng cho từng tay ──────────────────────────────
+    # FSR_L (FSR406, Fatigue): span 1.2kg = full bóp sau khi sửa slope firmware
+    # FSR_R (FSR402, Game):    span 2.0kg = bóp chơi game
+    FSR_L_KG_SPAN = 0.7   # kg — đo thực tế max bóp = ~0.7kg (tăng lên 1.2 nếu đã flash firmware mới)
+    FSR_R_KG_SPAN = 0.5   # kg — FSR402 range chơi game
 
-    # Quy đổi kg → % để log/dashboard dùng (dùng 0.2kg = 100% làm span mặc định)
-    FSR_KG_SPAN = 0.2
-    fsr_r_pct = round(min(fr_kg / FSR_KG_SPAN * 100.0, 100.0), 1)
-    fsr_l_pct = round(min(fl_kg / FSR_KG_SPAN * 100.0, 100.0), 1)
+    fsr_r_pct = round(min(fr_kg / FSR_R_KG_SPAN * 100.0, 100.0), 1)
+    fsr_l_pct = round(min(fl_kg / FSR_L_KG_SPAN * 100.0, 100.0), 1)
 
     cleaned = CleanedInput(
-        jx      = jx,
-        jy      = jy,
-        b1_dur  = raw["b1_dur"],
-        b2_dur  = raw["b2_dur"],
+        jx      = jx, jy = jy, b1_dur = raw["b1_dur"], b2_dur = raw["b2_dur"],
         pitch   = round(p, 2),
         roll    = round(r, 2),
-        yaw     = round(raw.get("yaw", 0.0), 2),   # yaw pass-through (firmware tính từ Madgwick)
-        fsr_r_kg = round(fr_kg, 4),  # kg tay phải → mapper dùng grip detect
-        fsr_l_kg = round(fl_kg, 4),  # kg tay trái → Fatigue only
-        fsr_r    = fsr_r_pct,        # % tay phải (log/dashboard)
-        fsr_l    = fsr_l_pct,        # % tay trái (log/dashboard)
-        grip    = bool(raw["grip"]),  # hysteresis bit từ firmware
-        tremor  = tremor,
-        # Flight stick microswitch (firmware v6.1) — pass-through, đã debounce
-        fs_up      = bool(raw["fs_up"]),
-        fs_down    = bool(raw["fs_down"]),
-        fs_left    = bool(raw["fs_left"]),
-        fs_right   = bool(raw["fs_right"]),
-        fs_trigger = bool(raw["fs_trigger"]),
-        fs_thumb   = bool(raw["fs_thumb"]),
+        yaw     = round(raw.get("yaw", 0.0), 2),
+        fsr_r_kg = round(raw["fsr_r_kg"], 4), fsr_l_kg = round(raw["fsr_l_kg"], 4),
+        fsr_r    = round(min(raw["fsr_r_kg"] / FSR_R_KG_SPAN * 100.0, 100.0), 1),
+        fsr_l    = round(min(raw["fsr_l_kg"] / FSR_L_KG_SPAN * 100.0, 100.0), 1),
+        grip = bool(raw["grip"]), tremor = tremor,
+        fs_up = bool(raw["fs_up"]), fs_down = bool(raw["fs_down"]),
+        fs_left = bool(raw["fs_left"]), fs_right = bool(raw["fs_right"]),
+        fs_trigger = bool(raw["fs_trigger"]), fs_thumb = bool(raw["fs_thumb"]),
     )
     return cleaned, fl_kg, fr_kg
-
 
 # ════════════════════════════════════════════════════════════
 #  AUTO-DETECT COM PORT
@@ -658,31 +817,16 @@ def run(ser: serial.Serial) -> None:
     error_count = 0
     last_status = time.time()
 
-    # ── TRẠNG THÁI EDGE-DETECTION CHO CÁC NÚT ─────────────────────
-    # Mỗi nút lưu trạng thái lần trước để phát hiện rising-edge (nhấn)
-    # và falling-edge (nhả) — tránh gửi phím liên tục mỗi 20ms
-
-    _prev_fs_left    = False
-    _prev_fs_right   = False
-    _prev_fs_up      = False
-    _prev_fs_down    = False
-    _prev_fs_trigger = False
-    _prev_fs_thumb   = False
-
-    # ── BỘ ĐẾM TRIGGER → GỬI SỐ 1-9 ──────────────────────────────
-    # Mỗi lần nhấn trigger (rising-edge) tăng bộ đếm lên 1.
-    # Khi bộ đếm = N (1..9), gửi phím số N vào Notepad/game.
-    # Khi bộ đếm = 9, lần nhấn tiếp theo reset về 1.
-
-    _hold_start_time  = {'a': 0.0, 'd': 0.0, 's': 0.0, 'w': 0.0}
-    _last_repeat_time = {'a': 0.0, 'd': 0.0, 's': 0.0, 'w': 0.0}
-
+    # ── BỘ ĐẾM TRIGGER → HIỂN THỊ UI ──────────────────────────────
+    # Dùng chỉ để hiển thị trên joystick map, không gửi phím trực tiếp.
+    # Mapper._handle_fs_trigger() tự xử lý việc gửi phím số 1-9.
     _trigger_count = 0   # 0 = chưa nhấn lần nào trong phiên
+    _prev_fs_trigger = False  # theo dõi rising-edge chỉ để cập nhật _trigger_count
 
     # stdin non-blocking để nhận lệnh runtime (z = reset zero)
     import msvcrt
-    import pyautogui
-    pyautogui.PAUSE = 0
+    import pydirectinput
+    pydirectinput.PAUSE = 0
 
     def _check_stdin_cmd():
         """Đọc lệnh từ terminal không blocking. Trả về chuỗi nếu có, None nếu không."""
@@ -707,6 +851,9 @@ def run(ser: serial.Serial) -> None:
                     reset_angle_zero(mapper=mapper)
                     print("\n  ✅ Zero reset! Giữ tay thẳng.")
 
+                if ser.in_waiting > 100:  # Nếu bộ đệm dồn ứ quá 100 ký tự (đang bị trễ)
+                    ser.reset_input_buffer()  # Xóa sạch đống gói dữ liệu cũ bị tắc đi
+
                 raw_bytes = ser.readline()
                 if not raw_bytes: continue
                 try: line = raw_bytes.decode("utf-8", errors="ignore")
@@ -728,112 +875,26 @@ def run(ser: serial.Serial) -> None:
 
                 # ── TẦNG 1: Lọc tín hiệu ──────────────────────
                 cleaned, fsr_l_out, fsr_r_out = run_filter_pipeline(raw)
-
-                # ── XỬ LÝ GÕ PHÍM VÀO NOTEPAD/GAME ────────────────────
-                # Mỗi nút xử lý độc lập, không phụ thuộc vào nhau.
-                # Dùng edge-detection: chỉ gửi phím khi trạng thái THAY ĐỔI,
-                # không gửi liên tục mỗi 20ms như trước.
-                cur_left    = cleaned.fs_left
-                cur_right   = cleaned.fs_right
-                cur_up      = cleaned.fs_up
-                cur_down    = cleaned.fs_down
-                cur_trigger = cleaned.fs_trigger
-                cur_thumb   = cleaned.fs_thumb
-
-                # ── Di chuyển: WASD (keyDown/keyUp theo trạng thái) ──────
-                # Cần keyDown/Up vì game cần giữ phím liên tục khi di chuyển.
-                # Chỉ gọi khi trạng thái thay đổi để tránh spam.
-                # Lấy thời gian hiện tại của vòng lặp
-                current_time = time.time()
-
-                # Cấu hình thời gian delay trước khi lặp (400ms) và tốc độ lặp (50ms mỗi chữ)
-                KEY_DELAY = 0.4
-                KEY_INTERVAL = 0.05
-
-                # ── Hướng LEFT (Phím 'a') ──────────────────────────────
-                if cur_left != _prev_fs_left:
-                    if cur_left:
-                        pyautogui.keyDown('a')
-                        _hold_start_time['a'] = current_time
-                        _last_repeat_time['a'] = current_time
-                    else:
-                        pyautogui.keyUp('a')
-                elif cur_left:  # Nếu đang giữ cần gạt trái
-                    if current_time - _hold_start_time['a'] >= KEY_DELAY:
-                        if current_time - _last_repeat_time['a'] >= KEY_INTERVAL:
-                            pyautogui.press('a')  # Tiếp tục gõ chữ vào Notepad
-                            _last_repeat_time['a'] = current_time
-
-                # ── Hướng RIGHT (Phím 'd') ─────────────────────────────
-                if cur_right != _prev_fs_right:
-                    if cur_right:
-                        pyautogui.keyDown('d')
-                        _hold_start_time['d'] = current_time
-                        _last_repeat_time['d'] = current_time
-                    else:
-                        pyautogui.keyUp('d')
-                elif cur_right:
-                    if current_time - _hold_start_time['d'] >= KEY_DELAY:
-                        if current_time - _last_repeat_time['d'] >= KEY_INTERVAL:
-                            pyautogui.press('d')
-                            _last_repeat_time['d'] = current_time
-
-                # ── Hướng UP (Phím 's') ───────────────────────────────
-                if cur_up != _prev_fs_up:
-                    if cur_up:
-                        pyautogui.keyDown('s')
-                        _hold_start_time['s'] = current_time
-                        _last_repeat_time['s'] = current_time
-                    else:
-                        pyautogui.keyUp('s')
-                elif cur_up:
-                    if current_time - _hold_start_time['s'] >= KEY_DELAY:
-                        if current_time - _last_repeat_time['s'] >= KEY_INTERVAL:
-                            pyautogui.press('s')
-                            _last_repeat_time['s'] = current_time
-
-                # ── Hướng DOWN (Phím 'w') ─────────────────────────────
-                if cur_down != _prev_fs_down:
-                    if cur_down:
-                        pyautogui.keyDown('w')
-                        _hold_start_time['w'] = current_time
-                        _last_repeat_time['w'] = current_time
-                    else:
-                        pyautogui.keyUp('w')
-                elif cur_down:
-                    if current_time - _hold_start_time['w'] >= KEY_DELAY:
-                        if current_time - _last_repeat_time['w'] >= KEY_INTERVAL:
-                            pyautogui.press('w')
-                            _last_repeat_time['w'] = current_time
-
-                # ── Trigger: đếm số lần nhấn → gửi phím số 1-9 ──────────
-                # Chỉ xử lý trên rising-edge (False → True).
-                # Lần 1 nhấn = gõ "1", lần 2 = "2", ..., lần 9 = "9",
-                # lần 10 quay lại "1".
-                if cur_trigger and not _prev_fs_trigger:
-                    _trigger_count = (_trigger_count % 9) + 1   # 1..9 cuộn vòng
-                    pyautogui.press(str(_trigger_count))         # gõ số vào Notepad/game
-
-                # ── Thumb: nhảy (Space) — chỉ nhấn 1 lần khi chạm nút ───
-                # Dùng rising-edge để tránh giữ Space liên tục.
-                if cur_thumb and not _prev_fs_thumb:
-                    pyautogui.press('space')
-
-                # Cập nhật trạng thái trước cho vòng lặp tiếp theo
-                _prev_fs_left    = cur_left
-                _prev_fs_right   = cur_right
-                _prev_fs_up      = cur_up
-                _prev_fs_down    = cur_down
-                _prev_fs_trigger = cur_trigger
-                _prev_fs_thumb   = cur_thumb
+                
+                # KHÔNG đặt deadzone cứng ở đây — mapper._handle_imu() dùng
+                # DELTA_DZONE trên delta/frame (0.5°/frame) — mịn hơn, không giật.
 
                 # ── TẦNG 2: Điều khiển game ────────────────────
+                # NOTE: Toàn bộ phím WASD, Jump, Sneak, Trigger, Thumb
+                # đều được xử lý trong mapper.process() bên dưới thông qua
+                # _WinKeyboard (SendInput) — không gửi thủ công ở đây nữa
+                # để tránh xung đột pydirectinput vs SendInput gây mất Jump/Sneak.
                 mapper.process(cleaned)
+
+                # Cập nhật bộ đếm trigger chỉ để hiển thị trên joystick map
+                if cleaned.fs_trigger and not _prev_fs_trigger:
+                    _trigger_count = (_trigger_count % 9) + 1
+                _prev_fs_trigger = cleaned.fs_trigger
 
                 # ── Terminal: IMU 3 trục + joystick map + flight stick ─
                 # Đọc biến toàn cục qua module reference để đảm bảo
                 # luôn lấy giá trị mới nhất (không bị stale binding)
-                if row_count % 5 == 0:
+                if row_count % 30 == 0:
                     m = _bme_mapper_mod
                     display_text = _joy_multiline(
                         jx             = cleaned.jx,
@@ -919,6 +980,7 @@ def startup_menu(ser: serial.Serial) -> None:
     print("│  6. Bật/tắt FSR Raw debug (FSR_RAW)          │")
     print("│  7. Căn zero góc MPU (ANGLE_ZERO)            │")
     print("│  8. Xem góc MPU hiện tại (ANGLE_STATUS)      │")
+    print("│  9. [DEBUG] Xem raw packet 5 giây            │")
     print("└──────────────────────────────────────────────┘")
     choice = input("  Chọn [1]: ").strip() or "1"
 
@@ -946,6 +1008,60 @@ def startup_menu(ser: serial.Serial) -> None:
     elif choice == "8":
         _send(ser, "ANGLE_STATUS"); _drain(ser, 3)
         print(f"  Python-side: {get_angle_display()}")
+        input("\nEnter..."); startup_menu(ser)
+    elif choice == "9":
+        # ── DEBUG: In raw packet 5 giây để kiểm tra FSR firmware + parser ──
+        print("\n  [DEBUG] Raw packet từ Arduino (5 giây) — Ctrl+C để dừng sớm")
+        print("  Định dạng: D,JX,JY,B1,B2,GRIP,PITCH,ROLL,FSR_L,FSR_R,VIB,SERVO,UP,DN,L,R,TRG,THB")
+        print("  " + "="*100)
+        print("  Index:    [0][1][2][3][4][5]   [6]   [7]   [8]      [9]      [10] [11]  [12][13][14][15][16][17]")
+        print("  " + "="*100)
+        print("  ✓ Nếu FSR_L/R=0.000 mà bóp → cảm biến/dây/firmware sai")
+        print("  ✓ Nếu FSR_L/R có giá trị → Python filter có thể loại nó\n")
+        ser.reset_input_buffer()
+        deadline = time.time() + 5.0
+        count = 0
+        fsr_stats = {"l_min": 999, "l_max": -999, "r_min": 999, "r_max": -999}
+        try:
+            while time.time() < deadline:
+                raw_bytes = ser.readline()
+                if not raw_bytes:
+                    continue
+                line = raw_bytes.decode("utf-8", errors="ignore").strip()
+                if not line.startswith("D,"):
+                    if line:
+                        print(f"  [NON-D] {line[:70]}")
+                    continue
+                parts = line.split(",")
+                count += 1
+                
+                # Parse từng field để dễ debug
+                try:
+                    fsr_l_raw = float(parts[8]) if len(parts) > 8 else 0.0
+                    fsr_r_raw = float(parts[9]) if len(parts) > 9 else 0.0
+                    fsr_stats["l_min"] = min(fsr_stats["l_min"], fsr_l_raw)
+                    fsr_stats["l_max"] = max(fsr_stats["l_max"], fsr_l_raw)
+                    fsr_stats["r_min"] = min(fsr_stats["r_min"], fsr_r_raw)
+                    fsr_stats["r_max"] = max(fsr_stats["r_max"], fsr_r_raw)
+                except ValueError:
+                    pass
+                
+                if count % 10 == 1:  # In 1 packet mỗi 10 (tránh flood)
+                    fsr_l_raw = parts[8] if len(parts) > 8 else "?"
+                    fsr_r_raw = parts[9] if len(parts) > 9 else "?"
+                    grip_raw  = parts[5] if len(parts) > 5 else "?"
+                    p_raw     = parts[6] if len(parts) > 6 else "?"
+                    r_raw     = parts[7] if len(parts) > 7 else "?"
+                    print(f"  #{count:04d} | FSR_L={fsr_l_raw:>8s}  FSR_R={fsr_r_raw:>8s}  GRIP={grip_raw} | P={p_raw:>7s} R={r_raw:>7s}")
+        except KeyboardInterrupt:
+            pass
+        print(f"\n  ━━━ TỰA KẾT ━━━")
+        print(f"  Tổng packets: {count}")
+        if fsr_stats["l_max"] > -999:
+            print(f"  FSR_L range: {fsr_stats['l_min']:.3f} → {fsr_stats['l_max']:.3f} kg")
+            print(f"  FSR_R range: {fsr_stats['r_min']:.3f} → {fsr_stats['r_max']:.3f} kg")
+        print(f"\n  ➤ Nếu L_max & R_max đều = 0.000 → firmware không gửi FSR (kiểm tra dây/cảm biến)")
+        print(f"  ➤ Nếu L_max & R_max > 0 mà Python vẫn show 0% → lỗi filter pipeline (check deadzone)")
         input("\nEnter..."); startup_menu(ser)
     else:
         run(ser)

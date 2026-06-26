@@ -47,9 +47,9 @@ THRESHOLDS = {
     "rom_pitch":      {"good": 30,   "warn": 15,   "unit": "°",    "higher": True,  "label": "aROM Pitch"},
     "rom_roll":       {"good": 25,   "warn": 12,   "unit": "°",    "higher": True,  "label": "aROM Roll"},
     "tremor_index":   {"good": 3.0,  "warn": 6.0,  "unit": "°std", "higher": False, "label": "Tremor Index"},
-    "fsr_l_mean_kg":  {"good": 0.10, "warn": 0.04, "unit": "kg",   "higher": True,  "label": "Lực bóp TB (tay liệt)"},
-    "fsr_l_peak_kg":  {"good": 0.20, "warn": 0.10, "unit": "kg",   "higher": True,  "label": "Lực bóp đỉnh (tay liệt)"},
-    "left_ratio":     {"good": 40,   "warn": 25,   "unit": "%",    "higher": True,  "label": "Tay liệt (%)"},
+    "fsr_l_mean_kg":  {"good": 0.10, "warn": 0.04, "unit": "kg",   "higher": True,  "label": "Lực bóp TB (tay yếu)"},
+    "fsr_l_peak_kg":  {"good": 0.20, "warn": 0.10, "unit": "kg",   "higher": True,  "label": "Lực bóp đỉnh (tay yếu)"},
+    "left_ratio":     {"good": 40,   "warn": 25,   "unit": "%",    "higher": True,  "label": "Tay yếu (%)"},
     "fatigue_pct":    {"good": 75,   "warn": 50,   "unit": "%",    "higher": True,  "label": "Fatigue (ROM giữ được)"},
 }
 
@@ -380,7 +380,7 @@ def chart_bilateral_progression(mdf: pd.DataFrame) -> go.Figure:
     """Stacked bar: % đóng góp tay trái vs tay phải theo phiên."""
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        name="Tay liệt / Trái",
+        name="Tay yếu / Trái",
         x=mdf["date_label"], y=mdf["left_ratio"],
         marker_color=C_BLUE,
         text=[f"{v:.0f}%" for v in mdf["left_ratio"]],
@@ -394,7 +394,7 @@ def chart_bilateral_progression(mdf: pd.DataFrame) -> go.Figure:
         textposition="inside",
     ))
     fig.add_hline(y=40, line_dash="dot", line_color=C_GOOD, line_width=1.5,
-                  annotation_text="Mục tiêu tay liệt ≥ 40%")
+                  annotation_text="Mục tiêu tay yếu ≥ 40%")
     fig.update_layout(
         barmode="stack", height=300,
         title=dict(text="<b>Phân bổ hai tay theo phiên</b>", font=dict(color=C_NAVY)),
@@ -708,7 +708,7 @@ def main():
             "tremor_index":   "Tremor",
             "fsr_l_mean_kg":  "Lực TB (kg)",
             "fsr_l_peak_kg":  "Lực đỉnh (kg)",
-            "left_ratio":     "Tay liệt%",
+            "left_ratio":     "Tay yếu%",
             "fatigue_pct":    "Fatigue%",
             "task_duration":  "Thời gian(s)",
         }

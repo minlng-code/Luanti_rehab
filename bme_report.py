@@ -196,10 +196,10 @@ def _page1(pdf, m, patient_name, session_no, session_date):
     dur_s = int(m["task_duration"] % 60)
     _metric_box(summary_ax[0], "Thời gian phiên", f"{dur_m}:{dur_s:02d}", "phút:giây",
                 C_ACCENT)
-    _metric_box(summary_ax[1], "Tay liệt đóng góp", f"{m['left_ratio']}%",
+    _metric_box(summary_ax[1], "Tay yếu đóng góp", f"{m['left_ratio']}%",
                 "bilateral ratio",
                 _color_for(m["left_ratio"], 40, 25))
-    _metric_box(summary_ax[2], "Lực bóp đỉnh", f"{m['fsr_l_peak_kg']:.3f}", "kg (tay liệt)",
+    _metric_box(summary_ax[2], "Lực bóp đỉnh", f"{m['fsr_l_peak_kg']:.3f}", "kg (tay yếu)",
                 _color_for(m["fsr_l_peak_kg"], 0.20, 0.10))
     fatigue_c = _color_for(m["fatigue_pct"], 75, 50)
     _metric_box(summary_ax[3], "Chỉ số mỏi cơ", f"{m['fatigue_pct']}%",
@@ -230,9 +230,9 @@ def _page1(pdf, m, patient_name, session_no, session_date):
                 _color_for(m["tremor_roll"], 3, 6, higher_is_better=False),
                 "Thấp = tốt")
 
-    # Row 5: Tham số 4 & 5 — Lực bóp tay liệt | 6 & 7 — Bilateral + Fatigue
+    # Row 5: Tham số 4 & 5 — Lực bóp tay yếu | 6 & 7 — Bilateral + Fatigue
     ax_h4 = fig.add_subplot(gs[5, :2])
-    _header(ax_h4, "4 & 5  Lực bóp tay liệt (FSR_L)", "Mathiowetz et al. | Bohannon 2006")
+    _header(ax_h4, "4 & 5  Lực bóp tay yếu (FSR_L)", "Mathiowetz et al. | Bohannon 2006")
     ax_h5 = fig.add_subplot(gs[5, 2:])
     _header(ax_h5, "6 & 7  Bilateral + Fatigue")
 
@@ -241,7 +241,7 @@ def _page1(pdf, m, patient_name, session_no, session_date):
                transform=ax_h4.transAxes, color="white",
                fontsize=11, va="center", fontweight="bold")
     ax_h5.text(0.3, 0.5,
-               f"Tay liệt: {m['left_ratio']}%   Mỏi: {m['fatigue_pct']}%",
+               f"Tay yếu: {m['left_ratio']}%   Mỏi: {m['fatigue_pct']}%",
                transform=ax_h5.transAxes, color="white",
                fontsize=11, va="center", fontweight="bold")
 
@@ -339,7 +339,7 @@ def _page3(pdf, df, m):
     ax_b = fig.add_subplot(gs[0, :])
     ax_b.set_facecolor(C_PRIMARY)
     ax_b.text(0.5, 0.5,
-              "PHÂN TÍCH CHUYÊN SÂU — Lực bóp tay liệt / Bilateral / Mỏi cơ",
+              "PHÂN TÍCH CHUYÊN SÂU — Lực bóp tay yếu / Bilateral / Mỏi cơ",
               transform=ax_b.transAxes, color="white",
               fontsize=12, ha="center", va="center", fontweight="bold")
     ax_b.axis("off")
@@ -364,7 +364,7 @@ def _page3(pdf, df, m):
         ax45.text(0.5, 0.5, "Không có dữ liệu FSR_L_KG trong CSV",
                   transform=ax45.transAxes, ha="center", color=C_WARN)
     ax45.legend(fontsize=7, loc="upper right")
-    _style(ax45, f"4 & 5 · Lực bóp tay liệt — TB: {m['fsr_l_mean_kg']:.3f} kg  "
+    _style(ax45, f"4 & 5 · Lực bóp tay yếu — TB: {m['fsr_l_mean_kg']:.3f} kg  "
                  f"Đỉnh: {m['fsr_l_peak_kg']:.3f} kg  "
                  f"({'✓ Tốt' if m['fsr_l_peak_kg'] >= 0.20 else '⚠ Yếu' if m['fsr_l_peak_kg'] >= 0.10 else '✗ Rất yếu'})")
 
@@ -408,7 +408,7 @@ def _page3(pdf, df, m):
         "Ngưỡng lâm sàng tham khảo (Mathiowetz et al., Bohannon 2006, Desrosiers 1995):\n"
         "aROM Pitch ≥ 30° = Tốt  |  Tremor < 3° std = Kiểm soát tốt  |  "
         "FSR_L mean ≥ 0.10 kg = Tốt  |  FSR_L peak ≥ 0.20 kg = Tốt\n"
-        "Bilateral: Tay liệt đóng góp ≥ 40% = Tốt  |  Fatigue ≥ 75% = Trong ngưỡng an toàn  |  < 50% = Cần nghỉ ngơi\n"
+        "Bilateral: Tay yếu đóng góp ≥ 40% = Tốt  |  Fatigue ≥ 75% = Trong ngưỡng an toàn  |  < 50% = Cần nghỉ ngơi\n"
         "Báo cáo này chỉ mang tính hỗ trợ — Kết luận lâm sàng cần bác sĩ phụ trách xác nhận."
     )
     ax_note.text(0.5, 0.75, note_text, transform=ax_note.transAxes,

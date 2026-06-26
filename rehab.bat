@@ -1,120 +1,161 @@
 @echo off
 cd /d "%~dp0"
 chcp 65001 >nul
-title BME REHABILITATION SYSTEM
-chcp 65001 >nul
-title BME REHABILITATION SYSTEM
-
-:: ============================================================
-::  REHAB.BAT — Khởi động 1-click Hệ thống Phục hồi Chức năng
-::  v2.1 — Tích hợp Streamlit Dashboard
-::
-::  Cách dùng:
-::    Double-click file này trước mỗi phiên tập
-::    Điền tên bệnh nhân và số phiên khi được hỏi
-:: ============================================================
+title HE THONG PHUC HOI CHUC NANG - BME
 
 cls
 echo.
 echo  ╔══════════════════════════════════════════════════╗
-echo  ║        REHABILITATION SYSTEM          ║
-echo  ║        Hệ thống Phục hồi Chức năng Qua Game     ║
+echo  ║        HE THONG PHUC HOI CHUC NANG - BME        ║
+echo  ║         Rehabilitation System v2.2              ║
 echo  ╚══════════════════════════════════════════════════╝
 echo.
 
 :: ── KIỂM TRA FILE CẦN THIẾT ──────────────────────────────────
-
 if not exist "bin\Release\luanti.exe" (
     if not exist "bin\Release\minetest.exe" (
-        echo [LỖI] Không tìm thấy bin\Release\luanti.exe
+        echo  [LOI] Khong tim thay bin\Release\luanti.exe
+        echo       Kiem tra lai thu muc cai dat.
         pause & exit /b 1
     )
 )
 
-:: ── NHẬP THÔNG TIN PHIÊN TẬP ─────────────────────────────────
-echo  ── Thông tin phiên tập ──────────────────────────────────
-echo.
-set /p BME_PATIENT="  Tên bệnh nhân (VD: NguyenVanA): "
-set /p BME_SESSION="  Số phiên tập  (VD: 1):          "
+if not exist ".venv\Scripts\python.exe" (
+    echo  [LOI] Khong tim thay .venv\Scripts\python.exe
+    echo       Kiem tra lai moi truong Python.
+    pause & exit /b 1
+)
 
-if "%BME_PATIENT%"=="" set BME_PATIENT=Benh_Nhan
-if "%BME_SESSION%"=="" set BME_SESSION=1
-set BME_PATIENT=%BME_PATIENT: =_%
+:: ── NHẬP THÔNG TIN PHIÊN TẬP ─────────────────────────────────
+echo  ── Thong tin phien tap ──────────────────────────────────
+echo.
+set /p INPUT_NAME="  Ten benh nhan (VD: Nguyen Van A): "
+set /p INPUT_SESSION="  So phien tap   (VD: 1):           "
+
+:: Chuẩn hóa tên: thay dấu cách bằng _ để dùng trong tên file
+if "%INPUT_NAME%"==""    set INPUT_NAME=Benh_Nhan
+if "%INPUT_SESSION%"=="" set INPUT_SESSION=1
+
+:: Tên hiển thị (giữ nguyên dấu cách)
+set BME_PATIENT_DISPLAY=%INPUT_NAME%
+
+:: Tên dùng cho file: thay khoảng trắng → _
+set BME_PATIENT=%INPUT_NAME: =_%
+set BME_SESSION=%INPUT_SESSION%
+
+:: Timestamp: YYYYMMDD_HHMM
+for /f "tokens=1-3 delims=/ " %%a in ("%DATE%") do (
+    set _DD=%%a
+    set _MM=%%b
+    set _YY=%%c
+)
+for /f "tokens=1-2 delims=:. " %%a in ("%TIME: =0%") do (
+    set _HH=%%a
+    set _MIN=%%b
+)
+set TIMESTAMP=%_YY%%_MM%%_DD%_%_HH%%_MIN%
+
+:: Tên file Excel: TenBenhNhan_PhienSo_YYYYMMDD_HHMM.xlsx
+set EXCEL_NAME=%BME_PATIENT%_Phien%BME_SESSION%_%TIMESTAMP%.xlsx
+set CSV_NAME=%BME_PATIENT%_Phien%BME_SESSION%_%TIMESTAMP%.csv
+
+:: Truyền tên file sang controller qua biến môi trường
+set BME_EXCEL_OUT=Patient_Records\Excel_Reports\%EXCEL_NAME%
+set BME_CSV_OUT=Patient_Records\Raw_CSV\%CSV_NAME%
 
 echo.
 echo  ┌──────────────────────────────────────────────────┐
-echo  │  Bệnh nhân : %BME_PATIENT%
-echo  │  Phiên số  : %BME_SESSION%
-echo  │  Thời gian : %DATE% %TIME%
+echo  │  Benh nhan : %BME_PATIENT_DISPLAY%
+echo  │  Phien so  : %BME_SESSION%
+echo  │  Thoi gian : %DATE% %TIME%
+echo  │  File xuat : %EXCEL_NAME%
 echo  └──────────────────────────────────────────────────┘
 echo.
 
-:: Tạo thư mục
-if not exist "Patient_Records\Raw_CSV"     mkdir "Patient_Records\Raw_CSV"
-if not exist "Patient_Records\PDF_Reports" mkdir "Patient_Records\PDF_Reports"
+:: ── TẠO THƯ MỤC ──────────────────────────────────────────────
+if not exist "Patient_Records\Raw_CSV"      mkdir "Patient_Records\Raw_CSV"
+if not exist "Patient_Records\Excel_Reports" mkdir "Patient_Records\Excel_Reports"
 
-:: ── BƯỚC 1: Khởi động BME Controller ────────────────────────
-echo  [1/4] Khởi động BME Controller (đọc phần cứng)...
-set BME_PATIENT=%BME_PATIENT%
-set BME_SESSION=%BME_SESSION%
-start "BME Controller" /MIN cmd /c ".\.venv\Scripts\python.exe bme_controller.py"
+:: ── BƯỚC 1: Khởi động BME Controller (ẩn cửa sổ) ────────────
+echo  [1/4] Khoi dong BME Controller...
+start "" /MIN ".\.venv\Scripts\python.exe" bme_controller.py
 
-echo       Đang tìm Arduino...
+echo       Dang ket noi Arduino (5 giay)...
 timeout /t 5 /nobreak >nul
 
-:: ── BƯỚC 2: Khởi động Streamlit Dashboard ────────────────────
-echo  [2/4] Khởi động Dashboard bác sĩ (http://localhost:8501)...
+:: ── BƯỚC 2: Khởi động Streamlit Dashboard (ẩn cửa sổ) ────────
+echo  [2/4] Khoi dong Dashboard (http://localhost:8501)...
 
-:: Kiểm tra Streamlit và Python có sẵn không
 where streamlit >nul 2>&1
 if %errorlevel%==0 (
-    start "BME Dashboard" /MIN cmd /c "streamlit run bme_dashboard.py --server.headless true --server.port 8501 2>&1"
+    start "" /MIN ".\.venv\Scripts\streamlit.exe" run bme_dashboard.py --server.headless true --server.port 8501
     timeout /t 4 /nobreak >nul
-    :: Tự động mở trình duyệt
     start "" "http://localhost:8501"
     echo       Dashboard: http://localhost:8501
 ) else (
-    echo  [!] Streamlit chưa cài. Bỏ qua dashboard.
-    echo      Cài bằng: pip install streamlit plotly pandas
+    echo  [!] Streamlit chua cai. Bo qua dashboard.
+    echo      Cai bang: pip install streamlit plotly pandas openpyxl
 )
 
-:: ── BƯỚC 3: Khởi động Luanti ─────────────────────────────────
-echo  [3/4] Khởi động Phòng tập ảo (Luanti)...
+:: ── BƯỚC 3: Khởi động Luanti (chờ đến khi đóng) ─────────────
+echo  [3/4] Khoi dong Phong tap ao (Luanti)...
+echo       (Cua so game se mo. Dong game de ket thuc phien tap.)
+echo.
+
 if exist "bin\Release\luanti.exe" (
     start /WAIT "" "bin\Release\luanti.exe"
 ) else (
     start /WAIT "" "bin\Release\minetest.exe"
 )
 
-:: ── BƯỚC 4: Kết thúc phiên ───────────────────────────────────
+:: ── BƯỚC 4: Kết thúc — tạo file Excel ───────────────────────
 echo.
-echo  [4/4] Game đã đóng. Đang hoàn tất phiên tập...
+echo  [4/4] Game da dong. Dang xu ly du lieu...
 timeout /t 2 /nobreak >nul
 
-:: Dừng BME Controller → kích hoạt tạo PDF
-taskkill /FI "WINDOWTITLE eq BME Controller" /F >nul 2>&1
+:: Dừng BME Controller → kích hoạt lưu dữ liệu
+taskkill /FI "IMAGENAME eq python.exe" /FI "WINDOWTITLE eq BME Controller*" /F >nul 2>&1
 
-echo       Đang xử lý báo cáo PDF...
+echo       Dang xuat file Excel: %EXCEL_NAME%
+echo       (Vui long cho 20 giay...)
 timeout /t 20 /nobreak >nul
+
+:: Gọi script Python xuất Excel nếu có
+if exist "bme_export_excel.py" (
+    ".\.venv\Scripts\python.exe" bme_export_excel.py ^
+        --patient "%BME_PATIENT%" ^
+        --session "%BME_SESSION%" ^
+        --timestamp "%TIMESTAMP%" ^
+        --csv-in "Patient_Records\Raw_CSV\%CSV_NAME%" ^
+        --excel-out "%BME_EXCEL_OUT%"
+)
 
 :: ── KẾT QUẢ ──────────────────────────────────────────────────
 echo.
 echo  ╔══════════════════════════════════════════════════╗
-echo  ║              PHIÊN TẬP HOÀN TẤT                 ║
+echo  ║            PHIEN TAP HOAN TAT                   ║
 echo  ╚══════════════════════════════════════════════════╝
 echo.
-echo  Dữ liệu thô  : Patient_Records\Raw_CSV\
-echo  Báo cáo PDF  : Patient_Records\PDF_Reports\
-echo  Dashboard    : http://localhost:8501  (vẫn đang chạy)
+echo  Du lieu thu  : Patient_Records\Raw_CSV\
+echo  Bao cao Excel: Patient_Records\Excel_Reports\
+echo  Dashboard    : http://localhost:8501  (van dang chay)
 echo.
 
-if exist "Patient_Records\PDF_Reports" (
-    explorer "Patient_Records\PDF_Reports"
+:: Tự động mở thư mục Excel nếu có file
+if exist "Patient_Records\Excel_Reports\%EXCEL_NAME%" (
+    echo  [OK] File Excel da xuat thanh cong:
+    echo       %EXCEL_NAME%
+    explorer "Patient_Records\Excel_Reports"
+) else (
+    if exist "Patient_Records\Excel_Reports" (
+        explorer "Patient_Records\Excel_Reports"
+    )
 )
 
-echo  Dashboard bác sĩ vẫn mở tại http://localhost:8501
-echo  Đóng cửa sổ "BME Dashboard" để tắt hoàn toàn.
 echo.
-echo  Nhấn phím bất kỳ để đóng cửa sổ này...
+echo  Dashboard bac si van mo tai http://localhost:8501
+echo  Dong cua so "BME Dashboard" de tat hoan toan.
+echo.
+echo  Nhan phim bat ky de dong...
 pause >nul
 exit /b 0

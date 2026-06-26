@@ -189,8 +189,10 @@ const float MPU_A_SLOPE     = 1.0664; // Hệ số góc nội suy MPU
 const float MPU_B_INTERCEPT = 0.202;  // Sai số điểm 0 của MPU
 
 // TAY TRÁI (LEFT) ĐANG DÙNG FSR 406
-const float FSR_L_A_SLOPE     = 0.0023;  // Hệ số góc FSR 406
-const float FSR_L_B_INTERCEPT = -0.0062; // Sai số điểm 0 FSR 406
+const float FSR_L_A_SLOPE     = 0.0055;  // FSR406: calib lại đo thực tế bóp mạnh
+                                           // 0.0023 cũ → max ~0.5kg (35%), quá thấp
+                                           // 0.0055 mới → max ~1.1-1.5kg ứng full bóp
+const float FSR_L_B_INTERCEPT = -0.01;   // offset âm nhỏ → loại nhiễu gần 0
 
 // TAY PHẢI (RIGHT) ĐANG DÙNG FSR 402
 const float FSR_R_A_SLOPE     = 0.0037;  // Hệ số góc FSR 402
@@ -940,6 +942,28 @@ void handle_cmd(const String& cmd) {
         Serial.println("====================");
         return;
     }
+    // ── FSR RAW DEBUG — in ADC thô 3 giây để chẩn đoán phần cứng ──────────
+    if (cmd == "FSR_RAW") {
+        Serial.println("FSR_RAW:START (3s) - Bop FSR trong luc doc...");
+        unsigned long t_end = millis() + 3000;
+        while (millis() < t_end) {
+            int a0 = analogRead(A0);
+            int a1 = analogRead(A1);
+            int a2 = analogRead(A2);
+            int a3 = analogRead(A3);
+            Serial.print("ADC: A0(FSR_L)="); Serial.print(a0);
+            Serial.print(" A1(JOY_Y)=");     Serial.print(a1);
+            Serial.print(" A2(JOY_X)=");     Serial.print(a2);
+            Serial.print(" A3(FSR_R)=");     Serial.println(a3);
+            delay(200);
+        }
+        Serial.println("FSR_RAW:DONE");
+        Serial.println("GIAI THICH: Khi KHONG bop FSR -> A0/A3 gan 0 (khong co R pulldown)");
+        Serial.println("            Khi CO bop FSR    -> A0/A3 tang len (100-900 tuy luc)");
+        Serial.println("            Neu A0/A3 luon=0  -> Thieu dien tro 10k pulldown!");
+        return;
+    }
+
     // Lệnh điều khiển phản hồi từ Python
     if (cmd.startsWith("VIB,"))   { vib_pulse(constrain(cmd.substring(4).toInt(),0,255),300); return; }
     if (cmd.startsWith("SERVO,")) { servoTarget=constrain(cmd.substring(6).toInt(),SERVO_MIN_ANGLE,SERVO_MAX_ANGLE); return; }

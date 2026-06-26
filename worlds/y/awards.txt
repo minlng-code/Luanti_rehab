@@ -1,1 +1,1 @@
-local _={};_[1]="singleplayer";return {[_[1]]={unlocked={},deaths=0,joins=7,chats=0,count={},place={},eat={},name=_[1],craft={}}}
+local _={};_[1]="singleplayer";return {[_[1]]={name=_[1],eat={},craft={},joins=13,chats=0,place={},deaths=0,unlocked={},count={}}}

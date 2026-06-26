@@ -26,7 +26,7 @@
 #  │    MPU Pitch     →  Mouse Y (nhìn lên/xuống)             │
 #  │    MPU Roll      →  Mouse X (quay trái/phải)             │
 #  │    FSR_R tap     →  Click RMB (đặt block / tương tác)    │
-#  │    FSR_R hold    →  Giữ LMB (đào / khai thác)            │
+#  │    FSR_R hold≥3s →  Giữ LMB (phá block / đào)            │
 #  │                                                           │
 #  └───────────────────────────────────────────────────────────┘
 #
@@ -57,11 +57,15 @@
 
 import time
 import ctypes
+import threading
 import ctypes.wintypes
 from pynput.mouse import Controller
 _pynput_mouse = Controller()
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+import pydirectinput
+pydirectinput.PAUSE = 0
 
 # ════════════════════════════════════════════════════════════
 #  BIẾN TOÀN CỤC GÓC MPU — điều khiển được từ bên ngoài mapper
@@ -201,7 +205,6 @@ MOUSEEVENTF_MIDDLEUP    = 0x0040
 
 
 class _KEYBDINPUT(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("wVk",         ctypes.c_ushort),
         ("wScan",       ctypes.c_ushort),
@@ -212,7 +215,6 @@ class _KEYBDINPUT(ctypes.Structure):
 
 
 class _MOUSEINPUT(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("dx",          ctypes.c_long),
         ("dy",          ctypes.c_long),
@@ -224,7 +226,6 @@ class _MOUSEINPUT(ctypes.Structure):
 
 
 class _INPUT_UNION(ctypes.Union):
-    _pack_ = 1
     _fields_ = [
         ("ki", _KEYBDINPUT),
         ("mi", _MOUSEINPUT),
@@ -232,7 +233,6 @@ class _INPUT_UNION(ctypes.Union):
 
 
 class _INPUT(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("type", ctypes.c_ulong),
         ("_",    _INPUT_UNION),
@@ -282,10 +282,16 @@ class _WinKeyboard:
         if sc:
             _send_key(vk, sc, key_up=True)
 
-    def tap(self, key, delay: float = 0.04) -> None:
+    def tap(self, key, delay: float = 0.0) -> None:
+        """Press + release non-blocking. delay ignored — uses daemon thread."""
         self.press(key)
-        time.sleep(delay)
-        self.release(key)
+        _kb_ref = self
+        _key_ref = key
+        _wait_time = delay if delay > 0 else 0.08
+        def _release_later():
+            time.sleep(0.03)
+            _kb_ref.release(_key_ref)
+        threading.Thread(target=_release_later, daemon=True).start()
 
     @staticmethod
     def _resolve(key) -> tuple:
@@ -327,11 +333,16 @@ class MapperConfig:
     joy_threshold:  int   = 20      # % ngưỡng WASD (-100..+100)
 
     # ── Camera / Cursor sensitivity ───────────────────────────
-    camera_sens:    float = 0.6     # SENSITIVITY
-    camera_dzone:   float = 8.0     # DEAD_ZONE
-    imu_smooth:     float = 0.75    # SMOOTH  
+    camera_sens:    float = 1.0     # SENSITIVITY
+    camera_dzone:   float = 2.0     # DEAD_ZONE
+    imu_smooth:     float = 0.5    # SMOOTH  
     ui_sens:        float = 2.8     # pixel / độ — UI MODE (nhạy hơn)
     ui_dzone:       float = 3.0     # deadzone nhỏ hơn trong UI
+
+    # ── Chống crosstalk chéo trục (giật lên/xuống khi quay ngang) ──
+    cross_suppress:   float = 0.5   # độ mạnh triệt trục phụ (0=tắt, ~2=mạnh)
+    dz_release_ratio: float = 0.6   # hysteresis: nhả deadzone khi |góc| < dzone*tỉ_lệ
+    imu_out_floor:    float = 0.18  # px/frame — dưới mức này coi như 0 (chống shimmer ±1px)
 
     # Adaptive khi tremor
     tremor_sens_scale:      float = 0.60
@@ -340,8 +351,9 @@ class MapperConfig:
     ui_tremor_dzone_scale:  float = 2.00
 
     # ── FSR tay phải — tap vs hold ────────────────────────────
-    fsr_threshold:  int   = 20      # % ngưỡng "đang bóp"
-    fsr_hold_secs:  float = 0.30    # giây → phân biệt tap vs hold
+    fsr_threshold:       int   = 20    # % ngưỡng "đang bóp"
+    fsr_hold_secs:       float = 0.08  # giây chờ tối thiểu trước khi xét tap/hold
+    fsr_hold_break_secs: float = 3.0   # giữ ≥ 3s → phá block (LMB hold)
 
     # ── B1 — jump vs sneak ────────────────────────────────────
     b1_sneak_secs:  float = 0.30    # giữ ≥ này → Shift (sneak)
@@ -353,7 +365,8 @@ class MapperConfig:
     # ── Haptic PWM ────────────────────────────────────────────
     haptic_fsr_hold_start:  int = 180
     haptic_fsr_hold_end:    int =  60
-    haptic_fsr_tap_rmc:     int = 120   # tap → RMB
+    haptic_fsr_tap_rmc:     int = 120   # tap → RMB (đặt block)
+    haptic_fsr_break_start: int = 200   # hold 3s → bắt đầu phá block (mạnh hơn)
     haptic_ui_click:        int = 100
     haptic_b1_jump:         int = 140
     haptic_b1_sneak_on:     int = 100
@@ -726,7 +739,7 @@ class BMEMapper:
             print("  [MAPPER] THUMB pressed")
 
         if inp.fs_thumb and not s.fs_thumb_armed and s.fs_thumb_t > 0:
-            if (now - s.fs_thumb_t) >= 3.0:
+            if (now - s.fs_thumb_t) >= 0.3:
                 try: self._kb.press("shift")
                 except Exception: pass
                 s.fs_thumb_armed = True
@@ -808,107 +821,167 @@ class BMEMapper:
     # ────────────────────────────────────────────────────────
 
     def _handle_imu(self, inp: CleanedInput) -> None:
-        """
-        Sử dụng 100% logic và pynput từ Mouse.py đã test thành công.
-        X = Roll (Nghiêng trái/phải)
-        Y = Pitch (Ngửa/gập)
-        """
-        # 1. Cập nhật góc toàn cục để bme_controller đọc
-        update_global_angles(inp.pitch, inp.roll, inp.yaw)
+            """
+            Chế độ VELOCITY (JOYSTICK) — xoay 360 độ tự do:
+            • Giữ được vị trí cam khi đứng yên (không bị trôi)
+            • Quay tự do không giới hạn (xoay 360 độ liên tục)
+            • Không rung vì tốc độ ≈ 0 khi tĩnh ở vùng chết (Deadzone)
 
-        # 2. Lấy thông số từ cấu hình
-        sens   = self.cfg.camera_sens
-        dead   = self.cfg.camera_dzone
-        smooth = self.cfg.imu_smooth
+            X = Roll  (nghiêng phải → quay phải)
+            Y = Pitch (ngửa lên   → nhìn lên)
+            """
+            # 1. Cập nhật góc toàn cục để bme_controller hiển thị
+            update_global_angles(inp.pitch, inp.roll, inp.yaw)
 
-        # 3. Hàm tính toán chuẩn 100% từ Mouse.py
-        def process(value, dead_zone):
-            if abs(value) < dead_zone:
-                return 0.0
-            sign = 1 if value > 0 else -1
-            magnitude = (abs(value) - dead_zone) * 0.4
-            return sign * magnitude
+            s   = self.state
+            cfg = self.cfg
 
-        # 4. Tính toán dx, dy (Trục X = roll, Trục Y = pitch)
-        dx = process(inp.roll, dead)
-        dy = process(-inp.pitch, dead)
+            # Khởi tạo state phụ (lazy) — tránh phải sửa dataclass
+            for _a, _v in (('sub_x', 0.0), ('sub_y', 0.0),
+                        ('smooth_x', 0.0), ('smooth_y', 0.0),
+                        ('imu_warmed', False)):
+                if not hasattr(s, _a):
+                    setattr(s, _a, _v)
 
-        # 5. Làm mượt (Smooth)
-        self.state.smooth_x = self.state.smooth_x * smooth + dx * (1 - smooth)
-        self.state.smooth_y = self.state.smooth_y * smooth + dy * (1 - smooth)
+            # 2. Frame đầu tiên sau khởi động: imu_prev = 0.0 → delta sẽ bằng góc thực
+            # Bỏ qua frame này, chỉ seed prev rồi return tránh spike chuột ban đầu
+            if not s.imu_warmed:
+                s.imu_prev_roll  = inp.roll
+                s.imu_prev_pitch = inp.pitch
+                s.imu_prev_yaw   = inp.yaw
+                s.imu_warmed     = True
+                return
 
-        move_x = int(self.state.smooth_x * sens)
-        move_y = int(self.state.smooth_y * sens)
+            # Lưu góc frame này làm "trước" cho frame sau (Giữ nguyên của bạn để không lỗi các hàm khác)
+            s.imu_prev_roll  = inp.roll
+            s.imu_prev_pitch = inp.pitch
+            s.imu_prev_yaw   = inp.yaw
 
-        # 6. Cập nhật biến toàn cục để controller hiển thị
-        import bme_mapper as _self_mod
-        _self_mod.g_mouse_dx = move_x
-        _self_mod.g_mouse_dy = move_y
+            # Lấy góc tương đối so với điểm Zero để làm gốc điều khiển Joystick
+            import bme_mapper as _self_mod
+            angle_x = _self_mod.g_roll_rel
+            angle_y = -_self_mod.g_pitch_rel  # âm = nhìn lên khi ngửa tay
 
-        # 7. Điều khiển chuột bằng pynput y như file test
-        if move_x != 0 or move_y != 0:
-            _pynput_mouse.move(move_x, move_y)
+            # 3. DEADZONE trên góc: bỏ qua rung nhỏ < current_dzone
+            # Mở rộng vùng chết lên 5.0 độ để chuột không bị trôi khi để tay tĩnh
+            base_dzone = 5.0  
+            current_dzone = base_dzone * (cfg.tremor_dzone_scale if inp.tremor else 1.0)
+            
+            raw_speed_x = 0.0
+            raw_speed_y = 0.0
+
+            # Tính toán gia tốc quay (Exponential Curve)
+            POWER_CURVE = 1.8  
+            SENS_MULTIPLIER = 0.15 
+            
+            if abs(angle_x) > current_dzone:
+                val = abs(angle_x) - current_dzone
+                raw_speed_x = (val ** POWER_CURVE) * cfg.camera_sens * SENS_MULTIPLIER * (1.0 if angle_x > 0 else -1.0)
+                
+            if abs(angle_y) > current_dzone:
+                val = abs(angle_y) - current_dzone
+                raw_speed_y = (val ** POWER_CURVE) * cfg.camera_sens * SENS_MULTIPLIER * (1.0 if angle_y > 0 else -1.0)
+
+            if inp.tremor:
+                raw_speed_x *= cfg.tremor_sens_scale
+                raw_speed_y *= cfg.tremor_sens_scale
+
+            # 4. EMA nhẹ — làm đầm chuột hơn trong chế độ xoay 360 độ
+            # smooth=0.15: lag < 0.5 frame, vừa đủ triệt spike còn sót
+            SMOOTH = 0.15
+            s.smooth_x = s.smooth_x * SMOOTH + raw_speed_x * (1.0 - SMOOTH)
+            s.smooth_y = s.smooth_y * SMOOTH + raw_speed_y * (1.0 - SMOOTH)
+
+            # 5. Nhân sensitivity → pixel thực
+            # Đã được tính toán gộp vào biến SENS_MULTIPLIER ở trên để tối ưu
+            raw_x = s.smooth_x
+            raw_y = s.smooth_y
+
+            # 6. Ngưỡng sàn output — dập shimmer ±0.3px khi gần đứng yên
+            FLOOR = cfg.imu_out_floor   # mặc định 0.18
+            if abs(raw_x) < FLOOR: raw_x = 0.0
+            if abs(raw_y) < FLOOR: raw_y = 0.0
+
+            # 7. Sub-pixel accumulator — không mất bước di chuyển nhỏ
+            s.sub_x += raw_x
+            s.sub_y += raw_y
+            move_x = int(s.sub_x)
+            move_y = int(s.sub_y)
+            s.sub_x -= move_x
+            s.sub_y -= move_y
+
+            # 8. Cập nhật biến toàn cục hiển thị
+            _self_mod.g_mouse_dx = move_x
+            _self_mod.g_mouse_dy = move_y
+
+            # 9. Di chuyển chuột DirectInput (THAY BẰNG _send_mouse CỦA BẠN)
+            if move_x != 0 or move_y != 0:
+                # Bỏ pydirectinput, dùng ctypes cấp thấp để mượt và không ngắt lệnh hold chuột
+                _send_mouse(MOUSEEVENTF_MOVE, dx=move_x, dy=move_y) 
 
     # ────────────────────────────────────────────────────────
     #  FSR TAY PHẢI → TAP / HOLD (GAME) | CLICK (UI)
     # ────────────────────────────────────────────────────────
 
     def _handle_fsr_right(self, inp: CleanedInput) -> None:
-        """
-        FSR tay phải (+ digital grip backup):
+            """
+            FSR tay phải — Tap = Click Trái (Đánh), Hold = Giữ Chuột Trái (Phá)
+            """
+            s   = self.state
+            cfg = self.cfg
+            now = time.monotonic()
 
-        GAME MODE:
-          Rising edge   → ghi t0
-          Hold ≥ 0.3s   → giữ LMB (đào block / khai thác)
-          Tap < 0.3s    → click RMB (đặt block / tương tác)
-          Release hold  → nhả LMB
+            # ── 1. ĐIỀU CHỈNH ĐỘ NHẠY LỰC BÓP TẠI ĐÂY ──
+            # Mức 0.05 kg (50 gram) là rất nhẹ. 
+            # Nếu bạn thấy chạm nhẹ nó đã tự click, hãy tăng lên 0.15 hoặc 0.2
+            TRIGGER_THRESHOLD = 0.05 
+            
+            pressed = (inp.fsr_r_kg >= TRIGGER_THRESHOLD) or inp.grip
 
-        UI MODE:
-          Tap bất kỳ → LMB click tại cursor (chọn item / craft)
-          Không phân biệt tap/hold trong UI
-        """
-        s   = self.state
-        cfg = self.cfg
-        now = time.monotonic()
+            if not hasattr(s, '_fsr_r_last_printed'):
+                s._fsr_r_last_printed = 0.0
+            if inp.fsr_r_kg > 0.03 and abs(inp.fsr_r_kg - s._fsr_r_last_printed) >= 0.03:
+                print(f"🤚 [FSR_R Tay Cầm] Lực bóp: {inp.fsr_r_kg:.2f} kg ({inp.fsr_r:.0f}%)")
+                s._fsr_r_last_printed = inp.fsr_r_kg
+            elif inp.fsr_r_kg <= 0.03 and s._fsr_r_last_printed > 0.03:
+                print("🤚 [FSR_R Tay Cầm] Thả tay")
+                s._fsr_r_last_printed = 0.0
 
-        # FSR402 tay phải: dùng grip bit (hysteresis từ firmware)
-        # HOẶC kg vượt ngưỡng (backup nếu firmware không tính hysteresis)
-        pressed = inp.grip or (inp.fsr_r_kg >= 0.15)
-
-        if s.ui_mode:
-            if pressed and not s.fsr_pressed:
-                try:
+            if s.ui_mode:
+                if pressed and not s.fsr_pressed:
                     _send_mouse(MOUSEEVENTF_LEFTDOWN)
-                    time.sleep(0.05)
-                    _send_mouse(MOUSEEVENTF_LEFTUP)
-                except Exception: pass
-                self._haptic_fire(cfg.haptic_ui_click)
-
-        else:
-            if pressed and not s.fsr_pressed:
-                s.fsr_press_t = now
-                s.fsr_holding = False
-
-            elif pressed and s.fsr_pressed:
-                if not s.fsr_holding:
-                    if (now - s.fsr_press_t) >= cfg.fsr_hold_secs:
-                        try: _send_mouse(MOUSEEVENTF_LEFTDOWN)
-                        except Exception: pass
-                        s.fsr_holding = True
-                        self._haptic_fire(cfg.haptic_fsr_hold_start)
-
-            elif not pressed and s.fsr_pressed:
-                if s.fsr_holding:
-                    try: _send_mouse(MOUSEEVENTF_LEFTUP)
-                    except Exception: pass
+                    threading.Thread(target=lambda: (time.sleep(0.05), _send_mouse(MOUSEEVENTF_LEFTUP)), daemon=True).start()
+                    self._haptic_fire(cfg.haptic_ui_click)
+                    print("\n🖱️ [FSR UI] Click trái chuột trong Menu/Inventory")
+            else:
+                if pressed and not s.fsr_pressed:
+                    s.fsr_press_t = now
                     s.fsr_holding = False
-                    self._haptic_fire(cfg.haptic_fsr_hold_end)
-                else:
-                    try: _send_mouse(MOUSEEVENTF_RIGHTDOWN); time.sleep(0.04); _send_mouse(MOUSEEVENTF_RIGHTUP)
-                    except Exception: pass
-                    self._haptic_fire(cfg.haptic_fsr_tap_rmc)
+                    print(f"\n📥 [FSR] Bắt đầu bóp (Lực: {inp.fsr_r_kg:.2f} kg)...")
 
-        s.fsr_pressed = pressed
+                elif pressed and s.fsr_pressed:
+                    if not s.fsr_holding:
+                        elapsed = now - s.fsr_press_t
+                        if elapsed >= cfg.fsr_hold_break_secs: 
+                            _send_mouse(MOUSEEVENTF_LEFTDOWN)
+                            s.fsr_holding = True
+                            self._haptic_fire(cfg.haptic_fsr_break_start)
+                            print(f"\n🔥 [FSR] Đã giữ >= {cfg.fsr_hold_break_secs}s -> ĐANG PHÁ BLOCK (Giữ Chuột Trái)...")
+
+                elif not pressed and s.fsr_pressed:
+                    if s.fsr_holding:
+                        _send_mouse(MOUSEEVENTF_LEFTUP)
+                        s.fsr_holding = False
+                        self._haptic_fire(cfg.haptic_fsr_hold_end)
+                        print("\n🛑 [FSR] Nhả tay -> Dừng phá block (Nhả Chuột Trái).")
+                    else:
+                        # ĐÃ ĐỔI SANG CHUỘT TRÁI (LEFTDOWN / LEFTUP) CHO THAO TÁC TAP
+                        _send_mouse(MOUSEEVENTF_LEFTDOWN)
+                        threading.Thread(target=lambda: (time.sleep(0.05), _send_mouse(MOUSEEVENTF_LEFTUP)), daemon=True).start()
+                        self._haptic_fire(cfg.haptic_fsr_tap_rmc)
+                        print(f"\n⚡ [FSR] Thả nhanh -> ĐÁNH (Click Chuột Trái).")
+
+            s.fsr_pressed = pressed
 
     # ────────────────────────────────────────────────────────
     #  FSR TAY TRÁI — FATIGUE MONITOR ONLY
@@ -927,8 +1000,20 @@ class BMEMapper:
         đặc biệt với bệnh nhân đột quỵ tay trái.
         """
         s = self.state
-        # Lưu kg để tính Fatigue Index (% so với đầu phiên)
+        # Lưu kg để tính Fatigue Index
         s.fsr_l_history.append(inp.fsr_l_kg)
+
+        # FIX: Chỉ in khi lực thay đổi đáng kể (≥0.05kg so với lần in trước)
+        # Tránh spam terminal 50Hz làm nghẽn ANSI redraw joystick map
+        if not hasattr(s, '_fsr_l_last_printed'):
+            s._fsr_l_last_printed = 0.0
+        if inp.fsr_l_kg > 0.05 and abs(inp.fsr_l_kg - s._fsr_l_last_printed) >= 0.05:
+            print(f"💪 [FSR_L Tay Trái] Lực bóp: {inp.fsr_l_kg:.2f} kg")
+            s._fsr_l_last_printed = inp.fsr_l_kg
+        elif inp.fsr_l_kg <= 0.05 and s._fsr_l_last_printed > 0.05:
+            print(f"💪 [FSR_L Tay Trái] Thả tay")
+            s._fsr_l_last_printed = 0.0
+
         if len(s.fsr_l_history) > s.FSR_L_HISTORY_MAX:
             s.fsr_l_history.pop(0)
 
