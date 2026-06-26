@@ -203,7 +203,7 @@ if __name__ == "__main__":
         print("🏭 TRẠM TẠO DỮ LIỆU ĐỒ ÁN (V4.1 - ĐÃ HIỆU CHUẨN CLINICAL ROM)")
         print("="*60)
         print("1. [Người Thường] Baseline (aROM Pitch ~130°, Roll ~100°)")
-        print("2. [Đột Quỵ] Trước tập (Khựng nhiều, run tay, liệt trái)")
+        print("2. [Đột Quỵ] Trước tập (Khựng nhiều, run tay, yếu trái)")
         print("3. [Đột Quỵ] Sau tập (Cải thiện rõ rệt)")
         print("4. 🚀 TẠO COMBO 9 FILE")
         print("0. Thoát")

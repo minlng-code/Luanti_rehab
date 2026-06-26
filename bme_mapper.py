@@ -333,7 +333,7 @@ class MapperConfig:
     joy_threshold:  int   = 20      # % ngưỡng WASD (-100..+100)
 
     # ── Camera / Cursor sensitivity ───────────────────────────
-    camera_sens:    float = 1.0     # SENSITIVITY
+    camera_sens:    float = 0.6     # SENSITIVITY
     camera_dzone:   float = 2.0     # DEAD_ZONE
     imu_smooth:     float = 0.5    # SMOOTH  
     ui_sens:        float = 2.8     # pixel / độ — UI MODE (nhạy hơn)
@@ -353,7 +353,7 @@ class MapperConfig:
     # ── FSR tay phải — tap vs hold ────────────────────────────
     fsr_threshold:       int   = 20    # % ngưỡng "đang bóp"
     fsr_hold_secs:       float = 0.08  # giây chờ tối thiểu trước khi xét tap/hold
-    fsr_hold_break_secs: float = 3.0   # giữ ≥ 3s → phá block (LMB hold)
+    fsr_hold_break_secs: float = 1.0   # giữ ≥ 1s → phá block (LMB hold)
 
     # ── B1 — jump vs sneak ────────────────────────────────────
     b1_sneak_secs:  float = 0.30    # giữ ≥ này → Shift (sneak)
@@ -739,7 +739,7 @@ class BMEMapper:
             print("  [MAPPER] THUMB pressed")
 
         if inp.fs_thumb and not s.fs_thumb_armed and s.fs_thumb_t > 0:
-            if (now - s.fs_thumb_t) >= 0.3:
+            if (now - s.fs_thumb_t) >= 2.0:
                 try: self._kb.press("shift")
                 except Exception: pass
                 s.fs_thumb_armed = True
@@ -822,102 +822,162 @@ class BMEMapper:
 
     def _handle_imu(self, inp: CleanedInput) -> None:
             """
-            Chế độ VELOCITY (JOYSTICK) — xoay 360 độ tự do:
-            • Giữ được vị trí cam khi đứng yên (không bị trôi)
-            • Quay tự do không giới hạn (xoay 360 độ liên tục)
-            • Không rung vì tốc độ ≈ 0 khi tĩnh ở vùng chết (Deadzone)
+            CHẾ ĐỘ VELOCITY THỰC SỰ (như analog joystick):
+              • Nghiêng cổ tay = chuột chạy liên tục
+              • Nghiêng nhiều  = chạy nhanh
+              • Về thẳng (trong deadzone) = dừng hẳn
+              • Không giới hạn — chuột chạy khắp màn hình
 
-            X = Roll  (nghiêng phải → quay phải)
-            Y = Pitch (ngửa lên   → nhìn lên)
+            CHỐNG DRIFT:
+              • Đo bias khi tĩnh (góc không đổi) → lưu làm zero point
+              • Trừ zero point khỏi góc hiện tại → góc sạch
+              • Bias học liên tục khi tay không di chuyển
             """
-            # 1. Cập nhật góc toàn cục để bme_controller hiển thị
+            import bme_mapper as _self_mod
+
             update_global_angles(inp.pitch, inp.roll, inp.yaw)
 
             s   = self.state
             cfg = self.cfg
 
-            # Khởi tạo state phụ (lazy) — tránh phải sửa dataclass
-            for _a, _v in (('sub_x', 0.0), ('sub_y', 0.0),
-                        ('smooth_x', 0.0), ('smooth_y', 0.0),
-                        ('imu_warmed', False)):
+            # Khởi tạo state (lazy)
+            _defaults = {
+                'sub_x': 0.0, 'sub_y': 0.0,
+                'smooth_x': 0.0, 'smooth_y': 0.0,
+                'imu_warmed': False,
+                # Zero point — góc "thẳng tay" hiện tại
+                '_zero_pitch': 0.0, '_zero_roll': 0.0,
+                # Đếm frame tĩnh để học zero
+                '_static_n': 0,
+                '_prev_pitch': 0.0, '_prev_roll': 0.0,
+                # Hysteresis
+                '_dz_active_x': False, '_dz_active_y': False,
+            }
+            for _a, _v in _defaults.items():
                 if not hasattr(s, _a):
                     setattr(s, _a, _v)
 
-            # 2. Frame đầu tiên sau khởi động: imu_prev = 0.0 → delta sẽ bằng góc thực
-            # Bỏ qua frame này, chỉ seed prev rồi return tránh spike chuột ban đầu
+            # Frame đầu — seed zero point = góc hiện tại
             if not s.imu_warmed:
-                s.imu_prev_roll  = inp.roll
+                s._zero_pitch = inp.pitch
+                s._zero_roll  = inp.roll
+                s._prev_pitch = inp.pitch
+                s._prev_roll  = inp.roll
                 s.imu_prev_pitch = inp.pitch
+                s.imu_prev_roll  = inp.roll
                 s.imu_prev_yaw   = inp.yaw
-                s.imu_warmed     = True
+                s.imu_warmed = True
                 return
 
-            # Lưu góc frame này làm "trước" cho frame sau (Giữ nguyên của bạn để không lỗi các hàm khác)
-            s.imu_prev_roll  = inp.roll
-            s.imu_prev_pitch = inp.pitch
-            s.imu_prev_yaw   = inp.yaw
+            # ── PHÁT HIỆN TĨNH & CẬP NHẬT ZERO POINT ──────────────
+            # Khi góc gần như không đổi giữa 2 frame → tay đứng yên
+            # → cập nhật zero point từ từ về góc hiện tại
+            # Điều này tự động bù drift dài hạn
+            dp_frame = abs(inp.pitch - s._prev_pitch)
+            dr_frame = abs(inp.roll  - s._prev_roll)
+            s._prev_pitch = inp.pitch
+            s._prev_roll  = inp.roll
 
-            # Lấy góc tương đối so với điểm Zero để làm gốc điều khiển Joystick
-            import bme_mapper as _self_mod
-            angle_x = _self_mod.g_roll_rel
-            angle_y = -_self_mod.g_pitch_rel  # âm = nhìn lên khi ngửa tay
+            STATIC_THR = 0.05   # °/frame — drift thực tế 0.12, chuyển động nhỏ nhất ~0.25
+            if dp_frame + dr_frame < STATIC_THR:
+                s._static_n += 1
+            else:
+                s._static_n = 0
 
-            # 3. DEADZONE trên góc: bỏ qua rung nhỏ < current_dzone
-            # Mở rộng vùng chết lên 5.0 độ để chuột không bị trôi khi để tay tĩnh
-            base_dzone = 5.0  
-            current_dzone = base_dzone * (cfg.tremor_dzone_scale if inp.tremor else 1.0)
-            
+            # Sau 20 frame tĩnh (~0.4s): kéo zero về góc hiện tại với tốc độ chậm
+            # Đây là cốt lõi chống drift — zero tự "đuổi" theo bias MPU
+            if s._static_n >= 50:
+                ZERO_LR = 0.005 # tốc độ kéo zero — chậm để không ảnh hưởng cử động
+                s._zero_pitch += (inp.pitch - s._zero_pitch) * ZERO_LR
+                s._zero_roll  += (inp.roll  - s._zero_roll)  * ZERO_LR
+
+            # ── GÓC TƯƠNG ĐỐI SO VỚI ZERO = TỐC ĐỘ CHUỘT ─────────
+            # Lật cổ tay trái/phải (roll) → mouse X
+            # Gập/ngửa cổ tay (pitch)    → mouse Y
+            angle_x =  (inp.roll  - s._zero_roll)
+            angle_y = (inp.pitch - s._zero_pitch)  # âm = nhìn lên khi ngửa tay
+
+            # ── DEADZONE với hysteresis ─────────────────────────────
+            DZONE = 3.0   # ° — vùng chết quanh zero point
+            if s._dz_active_x:
+                if abs(angle_x) < DZONE * 0.65:
+                    s._dz_active_x = False
+            else:
+                if abs(angle_x) >= DZONE:
+                    s._dz_active_x = True
+
+            if s._dz_active_y:
+                if abs(angle_y) < DZONE * 0.65:
+                    s._dz_active_y = False
+            else:
+                if abs(angle_y) >= DZONE:
+                    s._dz_active_y = True
+
             raw_speed_x = 0.0
             raw_speed_y = 0.0
 
-            # Tính toán gia tốc quay (Exponential Curve)
-            POWER_CURVE = 1.8  
-            SENS_MULTIPLIER = 0.15 
-            
-            if abs(angle_x) > current_dzone:
-                val = abs(angle_x) - current_dzone
-                raw_speed_x = (val ** POWER_CURVE) * cfg.camera_sens * SENS_MULTIPLIER * (1.0 if angle_x > 0 else -1.0)
-                
-            if abs(angle_y) > current_dzone:
-                val = abs(angle_y) - current_dzone
-                raw_speed_y = (val ** POWER_CURVE) * cfg.camera_sens * SENS_MULTIPLIER * (1.0 if angle_y > 0 else -1.0)
+            # ── VELOCITY: góc → tốc độ px/frame ───────────────────
+            # Data thực: lật nhanh dR≈2°/frame → góc tuyệt đối lên ±40°
+            # Muốn: ±5°  → ~3 px/frame (di chuyển nhẹ)
+            #        ±15° → ~15 px/frame (di chuyển vừa)
+            #        ±30° → ~35 px/frame (quét nhanh)
+            POWER_CURVE     = 1.15
+            SENS_MULTIPLIER = 0.15   # px / °^POWER sau deadzone
 
             if inp.tremor:
-                raw_speed_x *= cfg.tremor_sens_scale
-                raw_speed_y *= cfg.tremor_sens_scale
+                sens = SENS_MULTIPLIER * cfg.tremor_sens_scale
+                dzone_eff = DZONE * cfg.tremor_dzone_scale
+            else:
+                sens = SENS_MULTIPLIER
+                dzone_eff = DZONE
 
-            # 4. EMA nhẹ — làm đầm chuột hơn trong chế độ xoay 360 độ
-            # smooth=0.15: lag < 0.5 frame, vừa đủ triệt spike còn sót
-            SMOOTH = 0.15
+            if s._dz_active_x:
+                val = max(0.0, abs(angle_x) - dzone_eff)
+                raw_speed_x = (val ** POWER_CURVE) * sens * cfg.camera_sens * (1.0 if angle_x > 0 else -1.0)
+
+            if s._dz_active_y:
+                val = max(0.0, abs(angle_y) - dzone_eff)
+                raw_speed_y = (val ** POWER_CURVE) * sens * cfg.camera_sens * (1.0 if angle_y > 0 else -1.0)
+
+            # ── EMA làm mượt ────────────────────────────────────────
+            SMOOTH = 0.30
             s.smooth_x = s.smooth_x * SMOOTH + raw_speed_x * (1.0 - SMOOTH)
             s.smooth_y = s.smooth_y * SMOOTH + raw_speed_y * (1.0 - SMOOTH)
 
-            # 5. Nhân sensitivity → pixel thực
-            # Đã được tính toán gộp vào biến SENS_MULTIPLIER ở trên để tối ưu
+            # Khi tĩnh → xả smooth và sub-pixel nhanh
+            if not s._dz_active_x and not s._dz_active_y:
+                s.smooth_x *= 0.4
+                s.smooth_y *= 0.4
+                s.sub_x    *= 0.4
+                s.sub_y    *= 0.4
+
             raw_x = s.smooth_x
             raw_y = s.smooth_y
 
-            # 6. Ngưỡng sàn output — dập shimmer ±0.3px khi gần đứng yên
-            FLOOR = cfg.imu_out_floor   # mặc định 0.18
+            # Ngưỡng sàn output
+            FLOOR = cfg.imu_out_floor
             if abs(raw_x) < FLOOR: raw_x = 0.0
             if abs(raw_y) < FLOOR: raw_y = 0.0
 
-            # 7. Sub-pixel accumulator — không mất bước di chuyển nhỏ
-            s.sub_x += raw_x
-            s.sub_y += raw_y
-            move_x = int(s.sub_x)
-            move_y = int(s.sub_y)
-            s.sub_x -= move_x
-            s.sub_y -= move_y
+            # Sub-pixel accumulator
+            total_x = s.sub_x + raw_x
+            total_y = s.sub_y + raw_y
+            
+            move_x = int(total_x)
+            move_y = int(total_y)
+            
+            # Lưu lại phần dư lẻ (sub-pixel) cho frame tiếp theo
+            s.sub_x = total_x - move_x
+            s.sub_y = total_y - move_y
 
-            # 8. Cập nhật biến toàn cục hiển thị
+            s.imu_prev_roll  = inp.roll
+            s.imu_prev_pitch = inp.pitch
+            s.imu_prev_yaw   = inp.yaw
             _self_mod.g_mouse_dx = move_x
             _self_mod.g_mouse_dy = move_y
 
-            # 9. Di chuyển chuột DirectInput (THAY BẰNG _send_mouse CỦA BẠN)
             if move_x != 0 or move_y != 0:
-                # Bỏ pydirectinput, dùng ctypes cấp thấp để mượt và không ngắt lệnh hold chuột
-                _send_mouse(MOUSEEVENTF_MOVE, dx=move_x, dy=move_y) 
+                _send_mouse(MOUSEEVENTF_MOVE, dx=move_x, dy=move_y)
 
     # ────────────────────────────────────────────────────────
     #  FSR TAY PHẢI → TAP / HOLD (GAME) | CLICK (UI)

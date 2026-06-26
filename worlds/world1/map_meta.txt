@@ -1,6 +1,6 @@
 water_level = 1
 mg_name = v7
-seed = 58872692172707527
+seed = 4699023136008249368
 mg_flags = caves, nodungeons, light, decorations, biomes, ores
 mgv7_np_ridge = {
 	octaves = 4

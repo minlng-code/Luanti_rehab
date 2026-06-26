@@ -1,1 +1,1 @@
-local _={};_[1]="unlocked";_[2]="singleplayer";_[3]={};_[3].place={};_[3].deaths=0;_[3].joins=3;_[3].chats=0;_[3].count={mcl_flowers={fern=1,tallgrass=2}};_[3][_[1]]={};_[3].eat={};_[3].craft={};_[3].name=_[2];return {[_[2]]=_[3],[_[3]]={place={},deaths=0,[_[1]]={},chats=0,count={},eat={},joins=0,craft={},name=_[3]}}
+local _={};_[1]="singleplayer";return {[_[1]]={place={},deaths=0,joins=4,chats=0,craft={},name=_[1],eat={},count={},unlocked={}}}

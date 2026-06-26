@@ -274,6 +274,82 @@ class TremorDetector:
         self.tremor = False; self.variance = 0.0
 
 
+class GyroDriftCompensator:
+    """
+    Bù trôi gyroscope theo phương pháp bias estimation từ Wang et al. (2024).
+
+    NGUYÊN LÝ (đơn giản hóa từ bài báo):
+      • Khi tay đứng yên (static window), góc đầu ra lý tưởng phải = hằng số.
+      • Mọi thay đổi nhỏ trong vùng tĩnh đó là bias (trôi).
+      • Ước lượng bias = trung bình trượt của thay đổi góc khi tĩnh.
+      • Tích lũy bias này vào offset rồi trừ ra khỏi góc đầu ra.
+
+    PHÁT HIỆN TĨNH:
+      • Nếu |delta_pitch| + |delta_roll| < STATIC_THRESHOLD liên tục
+        STATIC_FRAMES frame → coi là tĩnh → cập nhật bias.
+
+    CHỐNG DRIFT SANG TRÁI / LÊN / XUỐNG:
+      • pitch_offset / roll_offset tích lũy dần, trừ vào p/r trước khi
+        đưa vào mapper — chuột không trôi dù để lâu.
+    """
+    STATIC_THRESHOLD = 0.4   # °/frame — ngưỡng phát hiện tĩnh
+    STATIC_FRAMES    = 30    # ~0.6s liên tục mới coi là tĩnh
+    BIAS_LR          = 0.008 # tốc độ học bias (nhỏ = ổn định, lớn = nhạy)
+    MAX_OFFSET       = 8.0   # ° — giới hạn tích lũy offset tránh over-correct
+
+    def __init__(self):
+        self._prev_p   = None
+        self._prev_r   = None
+        self._static_n = 0
+        self.pitch_offset = 0.0
+        self.roll_offset  = 0.0
+        self._bias_p   = 0.0   # tốc độ trôi ước lượng (°/frame)
+        self._bias_r   = 0.0
+
+    def update(self, pitch: float, roll: float) -> tuple:
+        """
+        Trả về (pitch_corrected, roll_corrected).
+        Gọi mỗi frame sau Hampel+Butterworth, trước khi đưa vào mapper.
+        """
+        if self._prev_p is None:
+            self._prev_p = pitch
+            self._prev_r = roll
+            return pitch, roll
+
+        dp = pitch - self._prev_p
+        dr = roll  - self._prev_r
+
+        # Phát hiện pha tĩnh
+        if abs(dp) + abs(dr) < self.STATIC_THRESHOLD:
+            self._static_n += 1
+        else:
+            self._static_n = 0
+
+        # Khi đủ frame tĩnh → cập nhật ước lượng bias bằng EMA
+        if self._static_n >= self.STATIC_FRAMES:
+            self._bias_p = (1 - self.BIAS_LR) * self._bias_p + self.BIAS_LR * dp
+            self._bias_r = (1 - self.BIAS_LR) * self._bias_r + self.BIAS_LR * dr
+            # Tích lũy offset (bù ngược chiều bias)
+            self.pitch_offset += self._bias_p
+            self.roll_offset  += self._bias_r
+            # Giới hạn tích lũy
+            self.pitch_offset = max(-self.MAX_OFFSET, min(self.MAX_OFFSET, self.pitch_offset))
+            self.roll_offset  = max(-self.MAX_OFFSET, min(self.MAX_OFFSET, self.roll_offset))
+
+        self._prev_p = pitch
+        self._prev_r = roll
+
+        return pitch - self.pitch_offset, roll - self.roll_offset
+
+    def reset(self):
+        self._prev_p = self._prev_r = None
+        self._static_n = 0
+        self.pitch_offset = 0.0
+        self.roll_offset  = 0.0
+        self._bias_p = 0.0
+        self._bias_r = 0.0
+
+
 class GimbalGuard:
     """
     Chặn cú LẬT pitch khi roll gần vùng kỳ dị Euler (±90°).
@@ -363,6 +439,9 @@ ema_jy       = AdaptiveEMA(alpha_min=0.4, alpha_max=1.0, threshold=40.0)
 tremor_det   = TremorDetector()
 pkt_quality  = PacketQualityMonitor(expected=1.0 / FS)
 
+# Bù trôi gyro theo Wang et al. (2024) — phát hiện pha tĩnh → ước lượng bias
+drift_comp   = GyroDriftCompensator()
+
 # Chặn lật pitch ở vùng kỳ dị Euler (giảm giật dọc khi quay ngang)
 gimbal_guard = GimbalGuard(roll_lim=65.0, pitch_lim=80.0)
 
@@ -370,7 +449,7 @@ gimbal_guard = GimbalGuard(roll_lim=65.0, pitch_lim=80.0)
 def reset_all_filters() -> None:
     for f in [hampel_pitch, hampel_roll, butter_pitch, butter_roll,
               zscore_fsr_l, zscore_fsr_r, butter_fsr_l, butter_fsr_r,
-              ema_jx, ema_jy, tremor_det, gimbal_guard]:
+              ema_jx, ema_jy, tremor_det, gimbal_guard, drift_comp]:
         f.reset()
 
 
@@ -453,22 +532,12 @@ def run_filter_pipeline(raw: dict) -> tuple:
     p_filtered = butter_pitch.update(hp)
     r_filtered = butter_roll.update(hr)
 
-    ANG_DEADZONE = 0.2  
-    
-    if abs(p_filtered) < ANG_DEADZONE:
-        p = 0.0
-    else:
-        # Làm mượt điểm gãy của dốc để di chuyển không bị khựng giật
-        p = (p_filtered - ANG_DEADZONE) if p_filtered > 0 else (p_filtered + ANG_DEADZONE)
+    # ── BÙ TRÔI GYROSCOPE ─────────────────────────────────────
+    # Drift được xử lý hoàn toàn trong mapper (delta-based + bias EMA)
+    # KHÔNG dùng GyroDriftCompensator ở đây vì nó tích lũy offset
+    # vào góc tuyệt đối → làm lệch pitch → không quay ra sau được
+    # p_filtered, r_filtered = drift_comp.update(p_filtered, r_filtered)
 
-    if abs(r_filtered) < ANG_DEADZONE:
-        r = 0.0
-    else:
-        r = (r_filtered - ANG_DEADZONE) if r_filtered > 0 else (r_filtered + ANG_DEADZONE)
-    
-    # 2. Ép mượt bằng bộ lọc EMA (hoặc AdaptiveEMA nếu bạn đã đổi)
-    # Dùng thẳng p_filtered / r_filtered — Butterworth 8Hz đủ mượt
-    # mapper EMA 0.25 lo phần triệt spike còn sót
     p = p_filtered
     r = r_filtered
 

@@ -370,7 +370,7 @@ def _page3(pdf, df, m):
 
     # ── 6. Bilateral — Horizontal bar ─────────────────────────
     ax6 = fig.add_subplot(gs[2, 0])
-    categories = ["Tay Trái (liệt)\nFlight Stick", "Tay Phải (lành)\nMPU6050"]
+    categories = ["Tay Trái (yếu))\nFlight Stick", "Tay Phải (khỏe)\nMPU6050"]
     values     = [m["left_ratio"], m["right_ratio"]]
     bar_colors = [C_ACCENT, "#E07B54"]
     bars = ax6.barh(categories, values, color=bar_colors,
